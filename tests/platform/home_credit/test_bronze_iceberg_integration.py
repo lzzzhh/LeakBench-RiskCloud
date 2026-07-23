@@ -16,7 +16,17 @@ from case_studies.home_credit.pipelines.bronze_ingestion import (
 from case_studies.home_credit.pipelines.spark_env import get_spark, setup_namespaces
 from riskcloud.adapters.home_credit.field_mapping import RAW_REQUIRED_COLUMNS
 
-pytestmark = pytest.mark.bronze_integration
+pytestmark = [
+    pytest.mark.bronze_integration,
+    # PySpark 3.5.3 local socket readers rely on GC to close raw sockets.
+    pytest.mark.filterwarnings(
+        r"ignore:Exception ignored in: <socket\.socket.*:"
+        r"_pytest.warning_types.PytestUnraisableExceptionWarning"
+    ),
+    pytest.mark.filterwarnings(
+        r"ignore:unclosed <socket\.socket.*:ResourceWarning"
+    ),
+]
 
 FIXTURES = Path(__file__).resolve().parents[3] / "tests" / "fixtures" / "home_credit"
 CONFIG_PATH = (
@@ -26,6 +36,15 @@ CONFIG_PATH = (
 REQUIRED_FILES = ["application_train.csv", "bureau.csv", "bureau_balance.csv"]
 
 _ALLOWED_SPARK_SHUTDOWN = (ConnectionResetError, ConnectionRefusedError, BrokenPipeError, EOFError)
+
+
+def _is_known_shutdown_noise(error: BaseException) -> bool:
+    import errno
+    if isinstance(error, _ALLOWED_SPARK_SHUTDOWN):
+        return True
+    if isinstance(error, OSError):
+        return error.errno in {errno.ECONNRESET, errno.ECONNREFUSED, errno.EPIPE, errno.EBADF}
+    return False
 
 
 def _flatten_exc_group(exc: BaseException) -> list[BaseException]:
@@ -44,8 +63,8 @@ def _stop_test_spark(spark) -> None:
         spark.stop()
     except BaseException as exc:
         leaves = _flatten_exc_group(exc)
-        if leaves and all(isinstance(e, _ALLOWED_SPARK_SHUTDOWN) for e in leaves):
-            return  # Known PySpark shutdown noise after JVM exit
+        if leaves and all(_is_known_shutdown_noise(e) for e in leaves):
+            return  # PySpark 3.5.3 local socket cleanup noise
         raise
 
 
@@ -95,12 +114,15 @@ def module_setup():
             "warehouse": warehouse, "manifest_sha": manifest_sha,
             "config": config, "receipt": receipt, "spark": spark,
         }
-    except Exception as exc:
+    except BaseException as exc:
         primary_error = exc
         raise
     finally:
+        import gc
+        gc.collect()
         try:
             _stop_test_spark(spark)
+            gc.collect()
         except BaseException as stop_err:
             if primary_error is None:
                 raise

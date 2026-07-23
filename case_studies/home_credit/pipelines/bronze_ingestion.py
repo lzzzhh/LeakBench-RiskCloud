@@ -482,10 +482,21 @@ def _ingest_one_table(
         java_snapshot_id = java_snapshot.snapshotId()
 
         # Get current metadata via HasTableOperations
+        # Get current metadata via runtime ClassLoader (not AppClassLoader)
         cls_name = str(jtable.getClass().getName())
-        has_ops_cls = jvm.java.lang.Class.forName("org.apache.iceberg.HasTableOperations")
-        if not has_ops_cls.isInstance(jtable):
-            raise RuntimeError(f"{table_name}: {cls_name} does not implement HasTableOperations")
+        cl = jtable.getClass().getClassLoader()
+        if cl is None:
+            cl_str = "null"
+        else:
+            cl_str = str(cl.getClass().getName())
+            try:
+                has_ops_cls = cl.loadClass("org.apache.iceberg.HasTableOperations")
+            except Exception as exc:
+                raise RuntimeError(
+                    f"{table_name}: failed to load HasTableOperations via {cl_str}: {exc}"
+                ) from exc
+            if not has_ops_cls.isAssignableFrom(jtable.getClass()):
+                raise RuntimeError(f"{table_name}: {cls_name} does not implement HasTableOperations")
 
         ops = jtable.operations()
         current_meta = ops.refresh()
@@ -511,7 +522,8 @@ def _ingest_one_table(
         if not metadata_location:
             raise RuntimeError(f"{table_name}: current metadata location is empty")
 
-        icebre_runtime_class = cls_name
+        iceberg_runtime_class = cls_name
+        iceberg_class_loader = cl_str
         metadata_snapshot_id_val = metadata_snap.snapshotId()
     except RuntimeError:
         raise
@@ -556,7 +568,8 @@ def _ingest_one_table(
         "iceberg_snapshot_id": snapshot_id,
         "java_snapshot_id": java_snapshot_id,
         "metadata_snapshot_id": metadata_snapshot_id_val,
-        "iceberg_runtime_class": icebre_runtime_class,
+        "iceberg_runtime_class": iceberg_runtime_class,
+        "iceberg_class_loader": iceberg_class_loader,
         "metadata_location": metadata_location,
         "source_file_sha256": actual_file_sha,
         "source_header_sha256": actual_header_sha,
