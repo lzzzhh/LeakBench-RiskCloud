@@ -1,8 +1,10 @@
-"""Prediction Point Contract (Section 6.2).
+"""PredictionPoint Contract (Section 6.2) — strict, split-aware validation.
 
-Every model training must first generate Prediction Points, then execute
-point-in-time joins. Never aggregate tables to final state first, then
-randomly split.
+Split-aware rules:
+  - TRAIN / VALIDATION / OOT  → snapshot_id + boundary_version required
+  - ONLINE                    → boundary_version required, label prohibited
+  - label_time > prediction_time (when both present)
+  - label required when label_time is set
 """
 
 from __future__ import annotations
@@ -13,64 +15,138 @@ from datetime import datetime, timezone
 from enum import Enum
 from typing import Any, Optional
 
+from riskcloud.contracts.validation import (
+    ContractValidationError,
+    FieldError,
+    coerce_str_nonempty,
+    coerce_float_opt,
+    coerce_enum,
+    coerce_datetime_utc,
+)
+
 
 class Split(str, Enum):
     TRAIN = "train"
     VALIDATION = "validation"
-    OOT = "oot"          # out-of-time
+    OOT = "oot"
     ONLINE = "online"
 
 
 @dataclass(frozen=True)
 class PredictionPoint:
-    """A single point in time at which a prediction is made.
-
-    The prediction_time is the boundary: any feature whose available_at >
-    prediction_time is temporally invalid for this prediction point.
-    """
-
     prediction_id: str
     entity_id: str
     prediction_time: datetime
-    label: Optional[float] = None
-    label_time: Optional[datetime] = None
     split: Split = Split.TRAIN
     snapshot_id: Optional[str] = None
     boundary_version: Optional[str] = None
+    label: Optional[float] = None
+    label_time: Optional[datetime] = None
 
-    # -- validation ----------------------------------------------------
+    # -- strict entry points -------------------------------------------
 
-    def validate(self) -> list[str]:
-        errors: list[str] = []
+    @classmethod
+    def parse(cls, d: dict[str, Any]) -> "PredictionPoint":
+        errors: list[FieldError] = []
+        try:
+            pp = cls._from_dict_coerce(d, errors)
+        except ContractValidationError:
+            raise
+        if errors:
+            raise ContractValidationError(errors)
+        return pp
 
-        if not self.prediction_id.strip():
-            errors.append("prediction_id must be non-empty")
-        if not self.entity_id.strip():
-            errors.append("entity_id must be non-empty")
+    @classmethod
+    def from_dict_unchecked(cls, d: dict[str, Any]) -> "PredictionPoint":
+        errors: list[FieldError] = []
+        return cls._from_dict_coerce(d, errors)
 
-        if self.prediction_time.tzinfo is None:
-            errors.append("prediction_time must be timezone-aware")
+    @classmethod
+    def _from_dict_coerce(cls, d: dict[str, Any], errors: list[FieldError]) -> "PredictionPoint":
+        def get_str(k: str) -> str:
+            try:
+                return coerce_str_nonempty(d.get(k), k)
+            except ContractValidationError as e:
+                errors.extend(e.errors)
+                return ""
 
-        if self.label is not None:
-            if not (0.0 <= self.label <= 1.0):
-                errors.append("label must be in [0, 1]")
-            if self.label_time is None:
-                errors.append("label_time required when label is set")
-            elif self.label_time.tzinfo is None:
-                errors.append("label_time must be timezone-aware")
-            elif (
-                self.prediction_time.tzinfo is not None
-                and self.label_time <= self.prediction_time
-            ):
-                errors.append(
-                    f"label_time ({self.label_time.isoformat()}) must be "
-                    f"> prediction_time ({self.prediction_time.isoformat()})"
-                )
+        prediction_id = get_str("prediction_id")
+        entity_id = get_str("entity_id")
 
-        return errors
+        try:
+            prediction_time = coerce_datetime_utc(d.get("prediction_time"), "prediction_time")
+        except ContractValidationError as e:
+            errors.extend(e.errors)
+            prediction_time = datetime(1970, 1, 1, tzinfo=timezone.utc)
 
-    def is_valid(self) -> bool:
-        return len(self.validate()) == 0
+        try:
+            split = coerce_enum(d.get("split", "train"), Split, "split")
+        except ContractValidationError as e:
+            errors.extend(e.errors)
+            split = Split.TRAIN
+
+        # Split-aware required fields
+        training_splits = {Split.TRAIN, Split.VALIDATION, Split.OOT}
+
+        if split in training_splits:
+            if not d.get("snapshot_id"):
+                errors.append(FieldError("snapshot_id", f"required for split={split.value}"))
+            if not d.get("boundary_version"):
+                errors.append(FieldError("boundary_version", f"required for split={split.value}"))
+
+        if split == Split.ONLINE:
+            if not d.get("boundary_version"):
+                errors.append(FieldError("boundary_version", "required for online split"))
+            if d.get("label") is not None:
+                errors.append(FieldError("label", "must not be set for online split"))
+
+        snapshot_id = d.get("snapshot_id")
+        boundary_version = d.get("boundary_version")
+
+        # Label
+        label_value = d.get("label")
+        try:
+            label = coerce_float_opt(label_value, "label") if label_value is not None else None
+        except ContractValidationError as e:
+            errors.extend(e.errors)
+            label = None
+
+        if label is not None and not (0.0 <= label <= 1.0):
+            errors.append(FieldError("label", "must be in [0, 1]", label))
+
+        # label_time
+        label_time_value = d.get("label_time")
+        label_time: Optional[datetime] = None
+        if label_time_value is not None:
+            try:
+                label_time = coerce_datetime_utc(label_time_value, "label_time")
+            except ContractValidationError as e:
+                errors.extend(e.errors)
+
+        # label ↔ label_time consistency
+        if label is not None and label_time is None:
+            errors.append(FieldError("label_time", "required when label is set"))
+        if label is None and label_time is not None:
+            errors.append(FieldError("label", "required when label_time is set"))
+
+        # Time ordering: label_time > prediction_time
+        if label_time is not None and prediction_time.tzinfo is not None and label_time.tzinfo is not None:
+            if label_time <= prediction_time:
+                errors.append(FieldError(
+                    "label_time",
+                    f"label_time ({label_time.isoformat()}) must be > prediction_time ({prediction_time.isoformat()})",
+                ))
+
+        return cls(
+            prediction_id=prediction_id,
+            entity_id=entity_id,
+            prediction_time=prediction_time,
+            split=split,
+            snapshot_id=snapshot_id,
+            boundary_version=boundary_version,
+            label=label,
+            label_time=label_time,
+        )
 
     # -- serialization --------------------------------------------------
 
@@ -82,32 +158,5 @@ class PredictionPoint:
             d["label_time"] = self.label_time.isoformat()
         return d
 
-    @classmethod
-    def from_dict(cls, d: dict[str, Any]) -> "PredictionPoint":
-        return cls(
-            prediction_id=d["prediction_id"],
-            entity_id=d["entity_id"],
-            prediction_time=cls._parse_dt(d["prediction_time"]),
-            label=d.get("label"),
-            label_time=cls._parse_dt(d["label_time"]) if d.get("label_time") else None,
-            split=Split(d.get("split", "train")),
-            snapshot_id=d.get("snapshot_id"),
-            boundary_version=d.get("boundary_version"),
-        )
-
     def to_json(self) -> str:
         return json.dumps(self.to_dict(), ensure_ascii=False)
-
-    @classmethod
-    def from_json(cls, s: str) -> "PredictionPoint":
-        return cls.from_dict(json.loads(s))
-
-    @staticmethod
-    def _parse_dt(v: str) -> datetime:
-        s = v.strip()
-        if s.endswith("Z"):
-            s = s[:-1] + "+00:00"
-        dt = datetime.fromisoformat(s)
-        if dt.tzinfo is None:
-            dt = dt.replace(tzinfo=timezone.utc)
-        return dt

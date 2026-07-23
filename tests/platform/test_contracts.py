@@ -1,10 +1,9 @@
-"""Schema validation tests for all four platform contracts.
+"""Schema validation tests for all four contracts — strict entry points.
 
-Coverage:
-  - Event: required fields, time ordering, serialization round-trip
-  - PredictionPoint: time ordering, label constraints, split enum
-  - FeatureCatalogEntry: required fields, stage/risk enums
-  - DocumentParseResult: credit entity linkage, quality score ranges
+Tests use:
+  - Contract.parse()    → should succeed for valid data, raise for invalid
+  - Contract.from_dict_unchecked() → should always construct (even invalid)
+  - Direct construction  → only for deep immutability tests
 """
 
 from __future__ import annotations
@@ -14,81 +13,80 @@ from datetime import datetime, timezone, timedelta
 
 import pytest
 
-from riskcloud.contracts.event import Event, EventType, EntityType
+from riskcloud.contracts.validation import ContractValidationError, FieldError
+from riskcloud.contracts.event import Event, EventType, EntityType, compute_event_id
 from riskcloud.contracts.prediction_point import PredictionPoint, Split
 from riskcloud.contracts.feature_catalog import (
     FeatureCatalogEntry,
     FeatureStage,
     LeakageRisk,
 )
-from riskcloud.contracts.document import DocumentParseResult
-
-
-# -----------------------------------------------------------------
-# helpers
-# -----------------------------------------------------------------
+from riskcloud.contracts.document import DocumentParseResult, LinkageStatus
 
 UTC = timezone.utc
 NOW = datetime(2024, 7, 1, 12, 0, 0, tzinfo=UTC)
 
 
-def make_valid_event(**overrides) -> Event:
-    """Return a valid Event for tests."""
-    event_time = NOW
-    kwargs = dict(
-        dataset_id="test_ds",
-        event_id="evt-001",
-        entity_type=EntityType.LOAN_APPLICATION,
-        entity_id="SK_ID_CURR:100001",
-        customer_id="customer:abc",
-        event_type=EventType.LOAN_APPLICATION,
-        event_time=event_time,
-        available_at=event_time + timedelta(seconds=10),
-        ingested_at=event_time + timedelta(seconds=20),
-        source_system="test_adapter",
-    )
-    kwargs.update(overrides)
-    return Event(**kwargs)
+def _valid_event_dict(**overrides) -> dict:
+    d = {
+        "dataset_id": "test_ds",
+        "event_id": compute_event_id("test_ds", EntityType.LOAN_APPLICATION, "SK_001", EventType.LOAN_APPLICATION, NOW),
+        "entity_type": "loan_application",
+        "entity_id": "SK_ID_CURR:100001",
+        "customer_id": "customer:abc",
+        "event_type": "loan_application",
+        "event_time": NOW.isoformat(),
+        "available_at": (NOW + timedelta(seconds=10)).isoformat(),
+        "ingested_at": (NOW + timedelta(seconds=20)).isoformat(),
+        "source_system": "test_adapter",
+    }
+    d.update(overrides)
+    return d
 
 
-def make_valid_prediction_point(**overrides) -> PredictionPoint:
-    kwargs = dict(
-        prediction_id="pp-001",
-        entity_id="SK_ID_CURR:100001",
-        prediction_time=NOW,
-        label=1.0,
-        label_time=NOW + timedelta(days=365),
-        split=Split.TRAIN,
-    )
-    kwargs.update(overrides)
-    return PredictionPoint(**kwargs)
+def _valid_pred_point_dict(**overrides) -> dict:
+    d = {
+        "prediction_id": "pp-001",
+        "entity_id": "SK_ID_CURR:100001",
+        "prediction_time": NOW.isoformat(),
+        "split": "train",
+        "snapshot_id": "snap-001",
+        "boundary_version": "v1.0",
+        "label": 1.0,
+        "label_time": (NOW + timedelta(days=365)).isoformat(),
+    }
+    d.update(overrides)
+    return d
 
 
-def make_valid_feature_entry(**overrides) -> FeatureCatalogEntry:
-    kwargs = dict(
-        feature_id="bureau_total_credit",
-        feature_name="Total Credit (Bureau)",
-        entity_type="application",
-        feature_group="bureau",
-        source_system="bureau",
-        event_time_rule="bureau observation date",
-        availability_rule="bureau reporting date <= prediction_time",
-        stage=FeatureStage.PRE_APPLICATION,
-    )
-    kwargs.update(overrides)
-    return FeatureCatalogEntry(**kwargs)
+def _valid_feature_dict(**overrides) -> dict:
+    d = {
+        "feature_id": "bureau_total_credit",
+        "feature_name": "Total Credit (Bureau)",
+        "entity_type": "application",
+        "feature_group": "bureau",
+        "source_system": "bureau",
+        "event_time_rule": "bureau observation date <= prediction_time",
+        "availability_rule": "bureau reporting date <= prediction_time",
+        "stage": "pre_application",
+        "owner": "credit_team",
+        "leakage_risk": "none",
+        "semantic_group_id": "bureau_history",
+        "lineage_expression": "SELECT SUM(credit) FROM bureau WHERE date <= prediction_time",
+    }
+    d.update(overrides)
+    return d
 
 
-def make_valid_doc_result(**overrides) -> DocumentParseResult:
-    kwargs = dict(
-        document_id="doc-001",
-        entity_id="SK_ID_CURR:100001",
-        object_uri="s3://bucket/doc001.png",
-        content_sha256="a" * 64,
-        document_type="id_card",
-    )
-    kwargs.update(overrides)
-    return DocumentParseResult(**kwargs)
+def _valid_doc_dict(**overrides) -> dict:
+    d = {
+        "document_id": "doc-001",
+        "object_uri": "s3://bucket/doc001.png",
+        "content_sha256": "a" * 64,
+        "document_type": "id_card",
+    }
+    d.update(overrides)
+    return d
 
 
 # =================================================================
@@ -97,125 +95,105 @@ def make_valid_doc_result(**overrides) -> DocumentParseResult:
 
 class TestEventContract:
 
-    def test_valid_event_passes(self):
-        evt = make_valid_event()
-        assert evt.is_valid()
-        assert evt.validate() == []
+    # -- parse() happy path --
 
-    def test_valid_event_json_roundtrip(self):
-        evt = make_valid_event()
+    def test_parse_valid_event(self):
+        evt = Event.parse(_valid_event_dict())
+        assert evt.dataset_id == "test_ds"
+        assert evt.entity_type == EntityType.LOAN_APPLICATION
+
+    def test_json_roundtrip(self):
+        evt = Event.parse(_valid_event_dict())
         json_str = evt.to_json()
-        restored = Event.from_json(json_str)
-        assert restored == evt
-        # check that the JSON is parseable
-        d = json.loads(json_str)
-        assert d["dataset_id"] == "test_ds"
+        restored = Event.parse(json.loads(json_str))
+        assert restored.dataset_id == evt.dataset_id
+        assert restored.event_id == evt.event_id
+        assert restored.event_time == evt.event_time
+        assert restored.headers == evt.headers
 
-    def test_event_id_computation_is_deterministic(self):
-        eid1 = Event.compute_event_id(
-            "test_ds", EntityType.LOAN_APPLICATION, "SK_ID_CURR:1",
-            EventType.LOAN_APPLICATION, NOW, "s3://test"
-        )
-        eid2 = Event.compute_event_id(
-            "test_ds", EntityType.LOAN_APPLICATION, "SK_ID_CURR:1",
-            EventType.LOAN_APPLICATION, NOW, "s3://test"
-        )
+    # -- parse() failures --
+
+    def test_parse_empty_dataset_id_raises(self):
+        with pytest.raises(ContractValidationError) as exc:
+            Event.parse(_valid_event_dict(dataset_id=""))
+        assert any("dataset_id" in e.field_path for e in exc.value.errors)
+
+    def test_parse_empty_event_id_raises(self):
+        with pytest.raises(ContractValidationError) as exc:
+            Event.parse(_valid_event_dict(event_id=""))
+        assert any("event_id" in e.field_path for e in exc.value.errors)
+
+    def test_parse_naive_datetime_rejected(self):
+        with pytest.raises(ContractValidationError) as exc:
+            Event.parse(_valid_event_dict(event_time="2024-07-01T12:00:00"))
+        assert any("event_time" in e.field_path for e in exc.value.errors)
+
+    def test_parse_event_time_after_available_at(self):
+        with pytest.raises(ContractValidationError) as exc:
+            Event.parse(_valid_event_dict(
+                event_time=(NOW + timedelta(hours=1)).isoformat(),
+                available_at=NOW.isoformat(),
+            ))
+        assert any("event_time" in e.field_path for e in exc.value.errors)
+
+    def test_parse_wrong_type_raises(self):
+        with pytest.raises(ContractValidationError) as exc:
+            Event.parse(_valid_event_dict(dataset_id=None))
+        assert any("dataset_id" in e.field_path for e in exc.value.errors)
+
+    def test_parse_invalid_enum_raises(self):
+        with pytest.raises(ContractValidationError) as exc:
+            Event.parse(_valid_event_dict(entity_type="invalid_entity"))
+        assert any("entity_type" in e.field_path for e in exc.value.errors)
+
+    def test_parse_invalid_schema_version(self):
+        with pytest.raises(ContractValidationError) as exc:
+            Event.parse(_valid_event_dict(schema_version=0))
+        assert any("schema_version" in e.field_path for e in exc.value.errors)
+
+    def test_parse_multiple_errors_accumulated(self):
+        with pytest.raises(ContractValidationError) as exc:
+            Event.parse(_valid_event_dict(dataset_id="", event_id="", source_system=""))
+        assert len(exc.value.errors) >= 3
+
+    # -- from_dict_unchecked (always succeeds) --
+
+    def test_unchecked_never_raises(self):
+        evt = Event.from_dict_unchecked({"dataset_id": None, "event_id": None})
+        assert evt is not None
+        assert isinstance(evt, Event)
+
+    # -- event identity --
+
+    def test_compute_event_id_deterministic(self):
+        eid1 = compute_event_id("ds", EntityType.LOAN_APPLICATION, "SK_1", EventType.LOAN_APPLICATION, NOW)
+        eid2 = compute_event_id("ds", EntityType.LOAN_APPLICATION, "SK_1", EventType.LOAN_APPLICATION, NOW)
         assert eid1 == eid2
-        # different payload → different id
-        eid3 = Event.compute_event_id(
-            "test_ds", EntityType.LOAN_APPLICATION, "SK_ID_CURR:1",
-            EventType.LOAN_APPLICATION, NOW, "s3://other"
-        )
-        assert eid1 != eid3
 
-    def test_missing_dataset_id(self):
-        evt = make_valid_event(dataset_id="")
-        errs = evt.validate()
-        assert any("dataset_id" in e for e in errs)
+    def test_compute_event_id_same_instant_different_offset(self):
+        """Same instant with different UTC offset → same ID."""
+        t1 = datetime(2024, 1, 1, 10, 0, 0, tzinfo=timezone(timedelta(hours=10)))
+        t2 = datetime(2024, 1, 1, 0, 0, 0, tzinfo=timezone.utc)
+        eid1 = compute_event_id("ds", EntityType.LOAN_APPLICATION, "SK_1", EventType.LOAN_APPLICATION, t1)
+        eid2 = compute_event_id("ds", EntityType.LOAN_APPLICATION, "SK_1", EventType.LOAN_APPLICATION, t2)
+        assert eid1 == eid2
 
-    def test_missing_event_id(self):
-        evt = make_valid_event(event_id="")
-        errs = evt.validate()
-        assert any("event_id" in e for e in errs)
+    def test_compute_event_id_different_source_record(self):
+        eid1 = compute_event_id("ds", EntityType.LOAN_APPLICATION, "SK_1", EventType.LOAN_APPLICATION, NOW, source_record_id="r1")
+        eid2 = compute_event_id("ds", EntityType.LOAN_APPLICATION, "SK_1", EventType.LOAN_APPLICATION, NOW, source_record_id="r2")
+        assert eid1 != eid2
 
-    def test_missing_entity_id(self):
-        evt = make_valid_event(entity_id="")
-        errs = evt.validate()
-        assert any("entity_id" in e for e in errs)
+    # -- deep immutability --
 
-    def test_missing_customer_id(self):
-        evt = make_valid_event(customer_id="")
-        errs = evt.validate()
-        assert any("customer_id" in e for e in errs)
-
-    def test_missing_source_system(self):
-        evt = make_valid_event(source_system="")
-        errs = evt.validate()
-        assert any("source_system" in e for e in errs)
-
-    def test_event_time_must_be_timezone_aware(self):
-        evt = make_valid_event(
-            event_time=datetime(2024, 7, 1, 12, 0, 0),
-            available_at=datetime(2024, 7, 1, 12, 0, 10, tzinfo=UTC),
-            ingested_at=datetime(2024, 7, 1, 12, 0, 20, tzinfo=UTC),
-        )
-        errs = evt.validate()
-        assert any("event_time" in e for e in errs)
-
-    def test_available_at_must_be_timezone_aware(self):
-        evt = make_valid_event(
-            event_time=datetime(2024, 7, 1, 12, 0, 0, tzinfo=UTC),
-            available_at=datetime(2024, 7, 1, 12, 0, 10),
-            ingested_at=datetime(2024, 7, 1, 12, 0, 20, tzinfo=UTC),
-        )
-        errs = evt.validate()
-        assert any("available_at" in e for e in errs)
-
-    def test_ingested_at_must_be_timezone_aware(self):
-        evt = make_valid_event(
-            event_time=datetime(2024, 7, 1, 12, 0, 0, tzinfo=UTC),
-            available_at=datetime(2024, 7, 1, 12, 0, 10, tzinfo=UTC),
-            ingested_at=datetime(2024, 7, 1, 12, 0, 20),
-        )
-        errs = evt.validate()
-        assert any("ingested_at" in e for e in errs)
-
-    def test_event_time_must_not_exceed_available_at(self):
-        evt = make_valid_event(
-            event_time=NOW + timedelta(hours=1),
-            available_at=NOW,
-            ingested_at=NOW + timedelta(hours=1),
-        )
-        errs = evt.validate()
-        assert any("event_time" in e for e in errs)
-
-    def test_invalid_payload_sha256_length(self):
-        evt = make_valid_event(payload_sha256="abc")
-        errs = evt.validate()
-        assert any("payload_sha256" in e for e in errs)
-
-    def test_invalid_schema_version(self):
-        evt = make_valid_event(schema_version=0)
-        errs = evt.validate()
-        assert any("schema_version" in e for e in errs)
-
-    def test_multiple_errors_accumulated(self):
-        evt = make_valid_event(dataset_id="", event_id="", entity_id="")
-        errs = evt.validate()
-        assert len(errs) >= 3
-
-    def test_datetime_parsing_with_z_suffix(self):
-        evt = Event._parse_dt("2024-07-01T12:00:00Z")
-        assert evt.tzinfo is not None
-        assert evt == datetime(2024, 7, 1, 12, 0, 0, tzinfo=UTC)
-
-    def test_datetime_parsing_with_offset(self):
-        evt = Event._parse_dt("2024-07-01T22:00:00+10:00")
-        assert evt.tzinfo is not None
-
-    def test_datetime_parsing_naive_becomes_utc(self):
-        evt = Event._parse_dt("2024-07-01T12:00:00")
-        assert evt.tzinfo == UTC
+    def test_headers_are_frozen_copy(self):
+        orig = {"x": "1"}
+        evt = Event.parse(_valid_event_dict(headers=orig))
+        # Mutating original dict does not affect event
+        orig["x"] = "2"
+        assert evt.headers["x"] == "1"
+        # Cannot mutate via event either (TypeError on setitem if MappingProxy, or AttributeError)
+        with pytest.raises(TypeError) if hasattr(evt.headers, "_mapping") else pytest.raises(Exception):
+            evt.headers["y"] = "3"  # type: ignore[index]
 
 
 # =================================================================
@@ -224,149 +202,150 @@ class TestEventContract:
 
 class TestPredictionPointContract:
 
-    def test_valid_point_passes(self):
-        pp = make_valid_prediction_point()
-        assert pp.is_valid()
-        assert pp.validate() == []
+    def test_parse_valid_point(self):
+        pp = PredictionPoint.parse(_valid_pred_point_dict())
+        assert pp.prediction_id == "pp-001"
+        assert pp.split == Split.TRAIN
 
     def test_json_roundtrip(self):
-        pp = make_valid_prediction_point()
-        json_str = pp.to_json()
-        restored = PredictionPoint.from_json(json_str)
+        pp = PredictionPoint.parse(_valid_pred_point_dict())
+        restored = PredictionPoint.parse(json.loads(pp.to_json()))
         assert restored.prediction_id == pp.prediction_id
-        assert restored.prediction_time == pp.prediction_time
-        assert restored.label == pp.label
-        assert restored.label_time == pp.label_time
-        assert restored.split == pp.split
+        assert restored.snapshot_id == pp.snapshot_id
+        assert restored.boundary_version == pp.boundary_version
 
-    def test_missing_prediction_id(self):
-        pp = make_valid_prediction_point(prediction_id="")
-        errs = pp.validate()
-        assert any("prediction_id" in e for e in errs)
+    def test_parse_missing_prediction_id_raises(self):
+        with pytest.raises(ContractValidationError):
+            PredictionPoint.parse(_valid_pred_point_dict(prediction_id=""))
 
-    def test_missing_entity_id(self):
-        pp = make_valid_prediction_point(entity_id="")
-        errs = pp.validate()
-        assert any("entity_id" in e for e in errs)
+    def test_parse_naive_datetime_rejected(self):
+        with pytest.raises(ContractValidationError):
+            PredictionPoint.parse(_valid_pred_point_dict(prediction_time="2024-07-01T12:00:00"))
 
-    def test_prediction_time_must_be_timezone_aware(self):
-        pp = make_valid_prediction_point(
-            prediction_time=datetime(2024, 7, 1, 12, 0, 0)
-        )
-        errs = pp.validate()
-        assert any("prediction_time" in e for e in errs)
+    def test_parse_label_out_of_range(self):
+        with pytest.raises(ContractValidationError):
+            PredictionPoint.parse(_valid_pred_point_dict(label=1.5))
 
-    def test_label_must_be_in_range(self):
-        pp = make_valid_prediction_point(label=1.5)
-        errs = pp.validate()
-        assert any("label" in e for e in errs)
+    def test_parse_label_without_label_time(self):
+        with pytest.raises(ContractValidationError) as exc:
+            PredictionPoint.parse(_valid_pred_point_dict(label=1.0, label_time=None))
+        assert any("label_time" in e.field_path for e in exc.value.errors)
 
-    def test_label_negative(self):
-        pp = make_valid_prediction_point(label=-0.1)
-        errs = pp.validate()
-        assert any("label" in e for e in errs)
+    def test_parse_label_time_before_prediction_time(self):
+        with pytest.raises(ContractValidationError) as exc:
+            PredictionPoint.parse(_valid_pred_point_dict(
+                label=1.0,
+                label_time=(NOW - timedelta(days=1)).isoformat(),
+            ))
+        assert any("label_time" in e.field_path for e in exc.value.errors)
 
-    def test_label_time_required_when_label_set(self):
-        pp = make_valid_prediction_point(label=1.0, label_time=None)
-        errs = pp.validate()
-        assert any("label_time" in e for e in errs)
+    def test_parse_train_missing_snapshot_raises(self):
+        with pytest.raises(ContractValidationError) as exc:
+            PredictionPoint.parse(_valid_pred_point_dict(split="train", snapshot_id=None))
+        assert any("snapshot_id" in e.field_path for e in exc.value.errors)
 
-    def test_label_time_must_be_after_prediction_time(self):
-        pp = make_valid_prediction_point(
-            label=1.0,
-            label_time=NOW - timedelta(days=1),
-        )
-        errs = pp.validate()
-        assert any("label_time" in e for e in errs)
+    def test_parse_oot_missing_boundary_raises(self):
+        with pytest.raises(ContractValidationError) as exc:
+            PredictionPoint.parse(_valid_pred_point_dict(split="oot", boundary_version=None))
+        assert any("boundary_version" in e.field_path for e in exc.value.errors)
 
-    def test_oot_split(self):
-        pp = make_valid_prediction_point(split=Split.OOT)
-        assert pp.is_valid()
+    def test_parse_online_with_label_rejected(self):
+        with pytest.raises(ContractValidationError) as exc:
+            PredictionPoint.parse(_valid_pred_point_dict(
+                split="online",
+                snapshot_id=None,
+                label=1.0,
+            ))
+        assert any("label" in e.field_path for e in exc.value.errors)
 
-    def test_online_split(self):
-        pp = make_valid_prediction_point(split=Split.ONLINE)
-        assert pp.is_valid()
+    def test_parse_label_time_without_label(self):
+        with pytest.raises(ContractValidationError) as exc:
+            PredictionPoint.parse(_valid_pred_point_dict(
+                label=None,
+                label_time=(NOW + timedelta(days=1)).isoformat(),
+            ))
+        assert any("label" in e.field_path for e in exc.value.errors)
+
+    def test_unchecked_never_raises(self):
+        pp = PredictionPoint.from_dict_unchecked({})
+        assert isinstance(pp, PredictionPoint)
 
 
 # =================================================================
-# FeatureCatalogEntry Contract
+# FeatureCatalog Contract
 # =================================================================
 
 class TestFeatureCatalogEntryContract:
 
-    def test_valid_entry_passes(self):
-        entry = make_valid_feature_entry()
-        assert entry.is_valid()
-        assert entry.validate() == []
+    def test_parse_valid_entry(self):
+        entry = FeatureCatalogEntry.parse(_valid_feature_dict())
+        assert entry.feature_id == "bureau_total_credit"
+        assert entry.is_publishable()
 
     def test_json_roundtrip(self):
-        entry = make_valid_feature_entry()
-        json_str = entry.to_json()
-        restored = FeatureCatalogEntry.from_json(json_str)
+        entry = FeatureCatalogEntry.parse(_valid_feature_dict())
+        restored = FeatureCatalogEntry.parse(json.loads(entry.to_json()))
         assert restored.feature_id == entry.feature_id
-        assert restored.stage == entry.stage
-        assert restored.leakage_risk == entry.leakage_risk
+        assert restored.tags == entry.tags
 
-    def test_missing_feature_id(self):
-        entry = make_valid_feature_entry(feature_id="")
-        errs = entry.validate()
-        assert any("feature_id" in e for e in errs)
+    def test_parse_missing_feature_id_raises(self):
+        with pytest.raises(ContractValidationError):
+            FeatureCatalogEntry.parse(_valid_feature_dict(feature_id=""))
 
-    def test_missing_feature_name(self):
-        entry = make_valid_feature_entry(feature_name="")
-        errs = entry.validate()
-        assert any("feature_name" in e for e in errs)
+    def test_parse_missing_feature_name_raises(self):
+        with pytest.raises(ContractValidationError):
+            FeatureCatalogEntry.parse(_valid_feature_dict(feature_name=""))
 
-    def test_missing_entity_type(self):
-        entry = make_valid_feature_entry(entity_type="")
-        errs = entry.validate()
-        assert any("entity_type" in e for e in errs)
+    def test_parse_invalid_version(self):
+        with pytest.raises(ContractValidationError):
+            FeatureCatalogEntry.parse(_valid_feature_dict(version=0))
 
-    def test_missing_feature_group(self):
-        entry = make_valid_feature_entry(feature_group="")
-        errs = entry.validate()
-        assert any("feature_group" in e for e in errs)
+    def test_parse_negative_ttl(self):
+        with pytest.raises(ContractValidationError):
+            FeatureCatalogEntry.parse(_valid_feature_dict(ttl=-1))
 
-    def test_missing_source_system(self):
-        entry = make_valid_feature_entry(source_system="")
-        errs = entry.validate()
-        assert any("source_system" in e for e in errs)
+    def test_parse_negative_cost_unit(self):
+        with pytest.raises(ContractValidationError):
+            FeatureCatalogEntry.parse(_valid_feature_dict(cost_unit=-0.5))
 
-    def test_missing_event_time_rule(self):
-        entry = make_valid_feature_entry(event_time_rule="")
-        errs = entry.validate()
-        assert any("event_time_rule" in e for e in errs)
+    # -- publishable check --
 
-    def test_missing_availability_rule(self):
-        entry = make_valid_feature_entry(availability_rule="")
-        errs = entry.validate()
-        assert any("availability_rule" in e for e in errs)
+    def test_draft_entry_not_publishable(self):
+        entry = FeatureCatalogEntry.parse(_valid_feature_dict(
+            owner="", leakage_risk="unknown", lineage_expression=None, semantic_group_id=None,
+        ))
+        assert not entry.is_publishable()
+        errs = entry.publishable_errors()
+        assert len(errs) >= 2
 
-    def test_invalid_version(self):
-        entry = make_valid_feature_entry(version=0)
-        errs = entry.validate()
-        assert any("version" in e for e in errs)
+    def test_publishable_rejects_unknown_risk(self):
+        entry = FeatureCatalogEntry.parse(_valid_feature_dict(leakage_risk="unknown"))
+        assert not entry.is_publishable()
 
-    def test_negative_ttl(self):
-        entry = make_valid_feature_entry(ttl=-1)
-        errs = entry.validate()
-        assert any("ttl" in e for e in errs)
+    def test_publishable_rejects_empty_owner(self):
+        entry = FeatureCatalogEntry.parse(_valid_feature_dict(owner=""))
+        assert not entry.is_publishable()
 
-    def test_negative_cost_unit(self):
-        entry = make_valid_feature_entry(cost_unit=-0.5)
-        errs = entry.validate()
-        assert any("cost_unit" in e for e in errs)
+    def test_publishable_rejects_empty_lineage(self):
+        entry = FeatureCatalogEntry.parse(_valid_feature_dict(lineage_expression=None))
+        assert not entry.is_publishable()
 
-    def test_unknown_leakage_risk_default(self):
-        entry = make_valid_feature_entry()
-        assert entry.leakage_risk == LeakageRisk.UNKNOWN
+    def test_publishable_rejects_missing_semantic_group(self):
+        entry = FeatureCatalogEntry.parse(_valid_feature_dict(semantic_group_id=None))
+        assert not entry.is_publishable()
 
-    def test_post_outcome_stage_with_risk(self):
-        entry = make_valid_feature_entry(
-            stage=FeatureStage.POST_OUTCOME,
-            leakage_risk=LeakageRisk.POST_OUTCOME,
-        )
-        assert entry.is_valid()
+    def test_online_feature_requires_ttl(self):
+        entry = FeatureCatalogEntry.parse(_valid_feature_dict(online_available=True, ttl=None))
+        assert not entry.is_publishable()
+
+    # -- deep immutability: tags are tuple --
+
+    def test_tags_are_immutable_tuple(self):
+        entry = FeatureCatalogEntry.parse(_valid_feature_dict(tags=["a", "b"]))
+        assert isinstance(entry.tags, tuple)
+        assert entry.tags == ("a", "b")
+        with pytest.raises(AttributeError):
+            entry.tags.append("c")  # type: ignore[union-attr]
 
 
 # =================================================================
@@ -375,73 +354,83 @@ class TestFeatureCatalogEntryContract:
 
 class TestDocumentParseResultContract:
 
-    def test_valid_result_passes(self):
-        doc = make_valid_doc_result()
-        assert doc.is_valid()
-        assert doc.validate() == []
+    def test_parse_valid_result(self):
+        doc = DocumentParseResult.parse(_valid_doc_dict())
+        assert doc.document_id == "doc-001"
+        assert not doc.has_entity_reference()
+        assert not doc.is_credit_model_eligible()
 
     def test_json_roundtrip(self):
-        doc = make_valid_doc_result()
-        json_str = doc.to_json()
-        restored = DocumentParseResult.from_json(json_str)
+        doc = DocumentParseResult.parse(_valid_doc_dict())
+        restored = DocumentParseResult.parse(json.loads(doc.to_json()))
         assert restored.document_id == doc.document_id
         assert restored.content_sha256 == doc.content_sha256
-        assert restored.document_type == doc.document_type
 
-    def test_missing_document_id(self):
-        doc = make_valid_doc_result(document_id="")
-        errs = doc.validate()
-        assert any("document_id" in e for e in errs)
+    def test_parse_missing_document_id_raises(self):
+        with pytest.raises(ContractValidationError):
+            DocumentParseResult.parse(_valid_doc_dict(document_id=""))
 
-    def test_missing_object_uri(self):
-        doc = make_valid_doc_result(object_uri="")
-        errs = doc.validate()
-        assert any("object_uri" in e for e in errs)
+    def test_parse_missing_object_uri_raises(self):
+        with pytest.raises(ContractValidationError):
+            DocumentParseResult.parse(_valid_doc_dict(object_uri=""))
 
-    def test_invalid_content_sha256_length(self):
-        doc = make_valid_doc_result(content_sha256="short")
-        errs = doc.validate()
-        assert any("content_sha256" in e for e in errs)
+    def test_parse_invalid_sha256_raises(self):
+        with pytest.raises(ContractValidationError):
+            DocumentParseResult.parse(_valid_doc_dict(content_sha256="short"))
 
-    def test_missing_document_type(self):
-        doc = make_valid_doc_result(document_type="")
-        errs = doc.validate()
-        assert any("document_type" in e for e in errs)
+    def test_parse_missing_document_type_raises(self):
+        with pytest.raises(ContractValidationError):
+            DocumentParseResult.parse(_valid_doc_dict(document_type=""))
 
-    def test_ocr_confidence_range(self):
-        doc = make_valid_doc_result(ocr_confidence=1.5)
-        errs = doc.validate()
-        assert any("ocr_confidence" in e for e in errs)
+    def test_parse_ocr_confidence_out_of_range(self):
+        with pytest.raises(ContractValidationError):
+            DocumentParseResult.parse(_valid_doc_dict(ocr_confidence=1.5))
 
-    def test_ocr_confidence_negative(self):
-        doc = make_valid_doc_result(ocr_confidence=-0.1)
-        errs = doc.validate()
-        assert any("ocr_confidence" in e for e in errs)
+    def test_parse_ocr_confidence_negative(self):
+        with pytest.raises(ContractValidationError):
+            DocumentParseResult.parse(_valid_doc_dict(ocr_confidence=-0.1))
 
-    def test_field_coverage_range(self):
-        doc = make_valid_doc_result(field_coverage=2.0)
-        errs = doc.validate()
-        assert any("field_coverage" in e for e in errs)
+    def test_parse_field_coverage_out_of_range(self):
+        with pytest.raises(ContractValidationError):
+            DocumentParseResult.parse(_valid_doc_dict(field_coverage=2.0))
 
-    def test_image_quality_score_range(self):
-        doc = make_valid_doc_result(image_quality_score=-0.5)
-        errs = doc.validate()
-        assert any("image_quality_score" in e for e in errs)
+    def test_parse_image_quality_out_of_range(self):
+        with pytest.raises(ContractValidationError):
+            DocumentParseResult.parse(_valid_doc_dict(image_quality_score=-0.5))
 
-    def test_has_credit_entity_with_valid_entity(self):
-        doc = make_valid_doc_result(entity_id="SK_ID_CURR:100001")
-        assert doc.has_credit_entity()
+    # -- linkage --
 
-    def test_has_credit_entity_with_none(self):
-        doc = make_valid_doc_result(entity_id=None)
-        assert not doc.has_credit_entity()
+    def test_unlinked_not_credit_eligible(self):
+        doc = DocumentParseResult.parse(_valid_doc_dict(
+            entity_id="SK_001", linkage_status="unlinked",
+        ))
+        assert doc.has_entity_reference()
+        assert not doc.is_credit_model_eligible()
 
-    def test_has_credit_entity_with_empty(self):
-        doc = make_valid_doc_result(entity_id="")
-        assert not doc.has_credit_entity()
+    def test_verified_is_credit_eligible(self):
+        doc = DocumentParseResult.parse(_valid_doc_dict(
+            entity_id="SK_001", linkage_status="verified",
+        ))
+        assert doc.has_entity_reference()
+        assert doc.is_credit_model_eligible()
 
-    def test_entity_id_none_does_not_link_to_credit(self):
-        """Document datasets without entity linkage stay independent."""
-        doc = make_valid_doc_result(entity_id=None)
-        assert not doc.has_credit_entity()
-        assert doc.is_valid()
+    def test_synthetic_is_credit_eligible(self):
+        doc = DocumentParseResult.parse(_valid_doc_dict(
+            entity_id="SK_001", linkage_status="synthetic",
+        ))
+        assert doc.is_credit_model_eligible()
+
+    def test_verified_without_entity_id_raises(self):
+        with pytest.raises(ContractValidationError) as exc:
+            DocumentParseResult.parse(_valid_doc_dict(
+                entity_id="", linkage_status="verified",
+            ))
+        assert any("entity_id" in e.field_path for e in exc.value.errors)
+
+    # -- deep immutability: metadata --
+
+    def test_metadata_is_frozen_copy(self):
+        orig = {"quality": 0.9}
+        doc = DocumentParseResult.parse(_valid_doc_dict(metadata=orig))
+        orig["quality"] = 0.1
+        assert doc.metadata["quality"] == 0.9

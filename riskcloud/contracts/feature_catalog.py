@@ -1,16 +1,29 @@
-"""Feature Catalog Contract (Section 6.3).
+"""FeatureCatalog Contract (Section 6.3) — strict, deeply immutable.
 
-Every feature used in training or online scoring must have a catalog entry
-that records its temporal stage, availability rule, leakage risk, and
-semantic grouping.
+Two states:
+  - DRAFT: can have UNKNOWN risk, empty owner/lineage
+  - PUBLISHABLE: requires owner, lineage, non-UNKNOWN risk
+
+Production paths (training, online serving, LeakBench gate) must use
+is_publishable() check before consuming a catalog entry.
 """
 
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass, field, asdict
+from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, Optional
+from typing import Any, Optional, Sequence
+
+from riskcloud.contracts.validation import (
+    ContractValidationError,
+    FieldError,
+    coerce_str_nonempty,
+    coerce_enum,
+    coerce_float_opt,
+    coerce_bool_opt,
+    coerce_int_opt,
+)
 
 
 class FeatureStage(str, Enum):
@@ -32,99 +45,192 @@ class LeakageRisk(str, Enum):
 
 @dataclass(frozen=True)
 class FeatureCatalogEntry:
-    """Catalog entry for a single feature.
-
-    This is the source-of-truth definition that both Spark (batch) and
-    Flink (stream) must respect.
-    """
-
     feature_id: str
     feature_name: str
-    entity_type: str                      # customer, application, transaction, document
-    feature_group: str                    # bureau, repayment, document_quality, etc.
-    source_system: str                    # original source table/system
-    event_time_rule: str                  # how to determine when the fact occurred
-    availability_rule: str                # when the fact becomes usable for prediction
+    entity_type: str
+    feature_group: str
+    source_system: str
+    event_time_rule: str
+    availability_rule: str
     stage: FeatureStage
     online_available: bool = False
-    ttl: Optional[int] = None             # seconds; None = no expiry
+    ttl: Optional[int] = None
     owner: str = ""
     version: int = 1
     leakage_risk: LeakageRisk = LeakageRisk.UNKNOWN
     semantic_group_id: Optional[str] = None
-    cost_unit: Optional[float] = None     # governance cost per unit
-    lineage_expression: Optional[str] = None  # SQL or computation hash
+    cost_unit: Optional[float] = None
+    lineage_expression: Optional[str] = None
     description: str = ""
-    tags: list[str] = field(default_factory=list)
+    tags: tuple[str, ...] = ()
 
-    # -- validation ----------------------------------------------------
+    # -- strict entry points -------------------------------------------
 
-    def validate(self) -> list[str]:
-        errors: list[str] = []
+    @classmethod
+    def parse(cls, d: dict[str, Any]) -> "FeatureCatalogEntry":
+        errors: list[FieldError] = []
+        try:
+            entry = cls._from_dict_coerce(d, errors)
+        except ContractValidationError:
+            raise
+        if errors:
+            raise ContractValidationError(errors)
+        return entry
 
-        if not self.feature_id.strip():
-            errors.append("feature_id must be non-empty")
-        if not self.feature_name.strip():
-            errors.append("feature_name must be non-empty")
-        if not self.entity_type.strip():
-            errors.append("entity_type must be non-empty")
-        if not self.feature_group.strip():
-            errors.append("feature_group must be non-empty")
-        if not self.source_system.strip():
-            errors.append("source_system must be non-empty")
-        if not self.event_time_rule.strip():
-            errors.append("event_time_rule must be non-empty")
-        if not self.availability_rule.strip():
-            errors.append("availability_rule must be non-empty")
+    @classmethod
+    def from_dict_unchecked(cls, d: dict[str, Any]) -> "FeatureCatalogEntry":
+        errors: list[FieldError] = []
+        return cls._from_dict_coerce(d, errors)
 
-        if self.version < 1:
-            errors.append("version must be >= 1")
+    @classmethod
+    def _from_dict_coerce(cls, d: dict[str, Any], errors: list[FieldError]) -> "FeatureCatalogEntry":
+        def get_str(k: str) -> str:
+            try:
+                return coerce_str_nonempty(d.get(k), k)
+            except ContractValidationError as e:
+                errors.extend(e.errors)
+                return ""
 
-        if self.ttl is not None and self.ttl <= 0:
-            errors.append("ttl must be positive")
+        feature_id = get_str("feature_id")
+        feature_name = get_str("feature_name")
+        entity_type = get_str("entity_type")
+        feature_group = get_str("feature_group")
+        source_system = get_str("source_system")
+        event_time_rule = get_str("event_time_rule")
+        availability_rule = get_str("availability_rule")
 
-        if self.cost_unit is not None and self.cost_unit < 0:
-            errors.append("cost_unit must be non-negative")
+        try:
+            stage = coerce_enum(d.get("stage"), FeatureStage, "stage")
+        except ContractValidationError as e:
+            errors.extend(e.errors)
+            stage = FeatureStage.PRE_APPLICATION
 
+        try:
+            online_available = coerce_bool_opt(d.get("online_available"), "online_available") or False
+        except ContractValidationError as e:
+            errors.extend(e.errors)
+            online_available = False
+
+        try:
+            ttl = coerce_int_opt(d.get("ttl"), "ttl")
+        except ContractValidationError as e:
+            errors.extend(e.errors)
+            ttl = None
+        if ttl is not None and ttl <= 0:
+            errors.append(FieldError("ttl", "must be positive", ttl))
+
+        owner = d.get("owner", "")
+        if not isinstance(owner, str):
+            owner = ""
+
+        try:
+            version = coerce_int_opt(d.get("version", 1), "version")
+        except ContractValidationError as e:
+            errors.extend(e.errors)
+            version = None
+        if version is None:
+            version = 1
+        if version < 1:
+            errors.append(FieldError("version", "must be >= 1", version))
+
+        try:
+            leakage_risk = coerce_enum(d.get("leakage_risk", "unknown"), LeakageRisk, "leakage_risk")
+        except ContractValidationError as e:
+            errors.extend(e.errors)
+            leakage_risk = LeakageRisk.UNKNOWN
+
+        semantic_group_id = d.get("semantic_group_id")
+
+        try:
+            cost_unit = coerce_float_opt(d.get("cost_unit"), "cost_unit")
+        except ContractValidationError as e:
+            errors.extend(e.errors)
+            cost_unit = None
+        if cost_unit is not None and cost_unit < 0:
+            errors.append(FieldError("cost_unit", "must be non-negative", cost_unit))
+
+        lineage_expression = d.get("lineage_expression")
+
+        description = d.get("description", "")
+        if not isinstance(description, str):
+            description = ""
+
+        tags_raw = d.get("tags", [])
+        if isinstance(tags_raw, list):
+            tags = tuple(str(t) for t in tags_raw)
+        elif isinstance(tags_raw, tuple):
+            tags = tags_raw
+        else:
+            tags = ()
+
+        return cls(
+            feature_id=feature_id,
+            feature_name=feature_name,
+            entity_type=entity_type,
+            feature_group=feature_group,
+            source_system=source_system,
+            event_time_rule=event_time_rule,
+            availability_rule=availability_rule,
+            stage=stage,
+            online_available=online_available,
+            ttl=ttl,
+            owner=owner,
+            version=version,
+            leakage_risk=leakage_risk,
+            semantic_group_id=semantic_group_id,
+            cost_unit=cost_unit,
+            lineage_expression=lineage_expression,
+            description=description,
+            tags=tags,
+        )
+
+    # -- publishable check ----------------------------------------------
+
+    PUBLISHABLE_REQUIRED = {
+        "owner must be non-empty": lambda e: bool(e.owner.strip()),
+        "leakage_risk must not be UNKNOWN": lambda e: e.leakage_risk != LeakageRisk.UNKNOWN,
+        "lineage_expression must be non-empty": lambda e: e.lineage_expression is not None and e.lineage_expression.strip() != "",
+        "semantic_group_id must be set": lambda e: e.semantic_group_id is not None and e.semantic_group_id.strip() != "",
+    }
+
+    def is_publishable(self) -> bool:
+        """True if this entry can be used in training, online serving, or LeakBench gate."""
+        return len(self.publishable_errors()) == 0
+
+    def publishable_errors(self) -> list[FieldError]:
+        """Return errors that prevent this entry from being publishable."""
+        errors: list[FieldError] = []
+        for msg, predicate in self.PUBLISHABLE_REQUIRED.items():
+            if not predicate(self):
+                errors.append(FieldError(self.feature_id, msg))
+        # Online features must have TTL
+        if self.online_available and self.ttl is None:
+            errors.append(FieldError(self.feature_id, "online_available requires ttl"))
         return errors
-
-    def is_valid(self) -> bool:
-        return len(self.validate()) == 0
 
     # -- serialization --------------------------------------------------
 
     def to_dict(self) -> dict[str, Any]:
-        d = asdict(self)
-        d["stage"] = self.stage.value
-        d["leakage_risk"] = self.leakage_risk.value
-        return d
-
-    @classmethod
-    def from_dict(cls, d: dict[str, Any]) -> "FeatureCatalogEntry":
-        return cls(
-            feature_id=d["feature_id"],
-            feature_name=d["feature_name"],
-            entity_type=d["entity_type"],
-            feature_group=d["feature_group"],
-            source_system=d["source_system"],
-            event_time_rule=d["event_time_rule"],
-            availability_rule=d["availability_rule"],
-            stage=FeatureStage(d["stage"]),
-            online_available=d.get("online_available", False),
-            ttl=d.get("ttl"),
-            owner=d.get("owner", ""),
-            version=d.get("version", 1),
-            leakage_risk=LeakageRisk(d.get("leakage_risk", "unknown")),
-            semantic_group_id=d.get("semantic_group_id"),
-            cost_unit=d.get("cost_unit"),
-            lineage_expression=d.get("lineage_expression"),
-            description=d.get("description", ""),
-            tags=d.get("tags", []),
-        )
+        return {
+            "feature_id": self.feature_id,
+            "feature_name": self.feature_name,
+            "entity_type": self.entity_type,
+            "feature_group": self.feature_group,
+            "source_system": self.source_system,
+            "event_time_rule": self.event_time_rule,
+            "availability_rule": self.availability_rule,
+            "stage": self.stage.value,
+            "online_available": self.online_available,
+            "ttl": self.ttl,
+            "owner": self.owner,
+            "version": self.version,
+            "leakage_risk": self.leakage_risk.value,
+            "semantic_group_id": self.semantic_group_id,
+            "cost_unit": self.cost_unit,
+            "lineage_expression": self.lineage_expression,
+            "description": self.description,
+            "tags": list(self.tags),
+        }
 
     def to_json(self) -> str:
         return json.dumps(self.to_dict(), ensure_ascii=False)
-
-    @classmethod
-    def from_json(cls, s: str) -> "FeatureCatalogEntry":
-        return cls.from_dict(json.loads(s))

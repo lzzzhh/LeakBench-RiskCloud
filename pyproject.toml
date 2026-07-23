@@ -1,0 +1,29 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "riskcloud"
+version = "0.0.1"
+description = "LeakBench-RiskCloud: cloud-native risk control platform"
+requires-python = ">=3.10"
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8",
+    "ruff>=0.4",
+    "mypy>=1.8",
+    "pyyaml>=6",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = ["-q", "--strict-markers", "--tb=short"]
+filterwarnings = ["error"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "N", "W", "UP"]

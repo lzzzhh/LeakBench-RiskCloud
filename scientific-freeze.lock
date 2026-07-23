@@ -1,0 +1,11 @@
+# Scientific Freeze Lock
+# Generated: 2026-07-23
+# Do not edit manually. Run `python -m riskcloud.freeze verify` to check.
+
+upstream:
+  repository: lzzzhh/LeakBench-Tab
+  commit: 4725df4594832eba60e688860ec5a7af40e71f66
+
+protected:
+  path: src/leakbench
+  tree_sha: 2d398b6d933d8993be9ef61ee479b0343c1bed11

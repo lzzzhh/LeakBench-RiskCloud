@@ -1,131 +1,174 @@
-"""Dataset Adapter Interface (Section 19 Phase 0).
+"""Dataset Adapter Interface (Section 19 Phase 0) — with closure validation.
 
-New datasets must implement this interface without modifying LeakBench Core.
 Each adapter provides:
   - field mapping from raw columns to contract fields
   - prediction boundary rules
   - feature catalog generation
   - event generation from raw records
+  - validate_adapter() closure check (catalog ↔ semantic mapping consistency)
 """
 
 from __future__ import annotations
 
+import re
 from abc import ABC, abstractmethod
 from typing import Any, Generator, Optional
 
-from riskcloud.contracts.event import Event, EventType, EntityType
-from riskcloud.contracts.feature_catalog import FeatureCatalogEntry
+from riskcloud.contracts.event import Event
+from riskcloud.contracts.feature_catalog import FeatureCatalogEntry, LeakageRisk
 from riskcloud.contracts.prediction_point import PredictionPoint
+from riskcloud.contracts.validation import FieldError
+
+_SEMVER_RE = re.compile(r"^\d+\.\d+\.\d+")
 
 
 class Adapter(ABC):
     """Base class for all dataset adapters.
 
-    Subclasses define how a specific dataset maps to the platform contracts.
-    Implementations live under platform/adapters/<dataset_name>/.
-
+    Implementations live under riskcloud/adapters/<dataset_name>/.
     LeakBench scientific core MUST NOT be modified by adapter implementations.
     """
 
-    # -- identity ------------------------------------------------------
+    # -- identity (abstract properties) ----------------------------------
 
     @property
     @abstractmethod
     def dataset_id(self) -> str:
-        """Stable identifier for this dataset (e.g. 'home_credit')."""
+        """Stable identifier (e.g. 'home_credit')."""
 
     @property
     @abstractmethod
     def display_name(self) -> str:
-        """Human-readable name (e.g. 'Home Credit Default Risk')."""
+        """Human-readable name."""
 
     @property
     @abstractmethod
     def adapter_version(self) -> str:
-        """Semantic version of this adapter implementation."""
+        """Semantic version (e.g. '1.0.0')."""
 
-    # -- prediction boundary --------------------------------------------
+    # -- prediction boundary (abstract methods) --------------------------
 
     @abstractmethod
-    def define_prediction_boundary(
-        self, raw_record: dict[str, Any]
-    ) -> PredictionPoint:
-        """Extract a prediction point from a raw record.
-
-        This is where the prediction_time boundary is established.
-        Features whose available_at > prediction_time are temporally
-        invalid for this record.
-        """
+    def define_prediction_boundary(self, raw_record: dict[str, Any]) -> PredictionPoint:
+        """Extract a prediction point from a raw record."""
 
     @abstractmethod
     def prediction_time_column(self) -> str:
-        """Name of the column/field used to derive prediction_time."""
+        """Column used to derive prediction_time."""
 
     @abstractmethod
     def label_column(self) -> Optional[str]:
-        """Name of the target column, or None if unsupervised."""
+        """Target column name, or None."""
 
     @abstractmethod
     def label_time_column(self) -> Optional[str]:
-        """Column used to derive label_time (must be > prediction_time)."""
+        """Column used to derive label_time (> prediction_time)."""
 
-    # -- event generation -----------------------------------------------
+    # -- event generation (abstract method) ------------------------------
 
     @abstractmethod
     def generate_events(
         self, raw_record: dict[str, Any], source_system: str = ""
     ) -> Generator[Event, None, None]:
-        """Yield zero or more platform events from one raw record.
+        """Yield platform events from one raw record."""
 
-        A single raw record (e.g. a loan application row) may produce
-        multiple events (e.g., application event + bureau snapshot event).
-        The generator design avoids materializing all events at once.
-        """
-
-    # -- feature catalog ------------------------------------------------
+    # -- feature catalog (abstract method) -------------------------------
 
     @abstractmethod
     def build_feature_catalog(self) -> list[FeatureCatalogEntry]:
-        """Return the complete feature catalog for this dataset.
+        """Return the complete feature catalog."""
 
-        Each entry specifies stage, availability_rule, entity_type,
-        and leakage_risk. This catalog drives both Spark feature
-        aggregation and Flink boundary checks.
-        """
-
-    # -- semantic groups ------------------------------------------------
+    # -- semantic groups (abstract method) -------------------------------
 
     @abstractmethod
     def semantic_group_mapping(self) -> dict[str, str]:
-        """Map feature_id -> semantic_group_id for LeakBench governance.
+        """Map feature_id → semantic_group_id for LeakBench governance."""
 
-        Semantic groups are the units that LeakBench policies operate on.
-        Example: 'bureau.*' -> 'credit_history'.
+    # -- closure validation ----------------------------------------------
+
+    def validate_adapter(self) -> list[FieldError]:
+        """Run closure checks on the adapter configuration.
+
+        Checks performed:
+          1. Basic identity fields (dataset_id, display_name, version format)
+          2. Catalog non-empty
+          3. Catalog feature_ids match semantic_group_mapping keys
+          4. Catalog semantic_group_id matches mapping value (if both set)
+          5. Label column ↔ label_time column consistency
+          6. Each publishable catalog entry passes the publishable check
         """
+        errors: list[FieldError] = []
 
-    # -- helpers --------------------------------------------------------
-
-    def validate_adapter(self) -> list[str]:
-        """Run self-checks on the adapter configuration.
-
-        Returns a list of errors (empty = valid).
-        """
-        errors: list[str] = []
+        # 1. Identity
         if not self.dataset_id.strip():
-            errors.append("dataset_id is empty")
+            errors.append(FieldError("dataset_id", "must be non-empty"))
         if not self.display_name.strip():
-            errors.append("display_name is empty")
-        if not self.adapter_version.strip():
-            errors.append("adapter_version is empty")
+            errors.append(FieldError("display_name", "must be non-empty"))
+        if not _SEMVER_RE.match(self.adapter_version):
+            errors.append(FieldError("adapter_version", f"must be semver (X.Y.Z), got '{self.adapter_version}'"))
 
+        # 2. Catalog
         catalog = self.build_feature_catalog()
-        feature_ids = {e.feature_id for e in catalog}
-        if len(feature_ids) != len(catalog):
-            errors.append("build_feature_catalog: duplicate feature_ids found")
+        if len(catalog) == 0:
+            errors.append(FieldError("feature_catalog", "must contain at least one entry"))
 
+        # Check for duplicate feature_ids
+        feature_ids = [e.feature_id for e in catalog]
+        if len(set(feature_ids)) != len(feature_ids):
+            seen: dict[str, int] = {}
+            for fid in feature_ids:
+                seen[fid] = seen.get(fid, 0) + 1
+            dupes = [fid for fid, count in seen.items() if count > 1]
+            errors.append(FieldError("feature_catalog", f"duplicate feature_ids: {dupes}"))
+
+        # 3. Catalog ↔ semantic mapping closure
+        mapping = self.semantic_group_mapping()
+        catalog_ids = set(feature_ids)
+        mapping_ids = set(mapping.keys())
+
+        only_in_catalog = catalog_ids - mapping_ids
+        only_in_mapping = mapping_ids - catalog_ids
+
+        if only_in_catalog:
+            errors.append(FieldError(
+                "semantic_group_mapping",
+                f"missing mappings for feature_ids: {sorted(only_in_catalog)}",
+            ))
+        if only_in_mapping:
+            errors.append(FieldError(
+                "semantic_group_mapping",
+                f"mapping contains feature_ids not in catalog: {sorted(only_in_mapping)}",
+            ))
+
+        # 4. Catalog semantic_group_id must match mapping value
+        catalog_map = {e.feature_id: e.semantic_group_id for e in catalog}
+        for fid, mapped_group in mapping.items():
+            catalog_group = catalog_map.get(fid)
+            if catalog_group is not None and catalog_group.strip():
+                if catalog_group != mapped_group:
+                    errors.append(FieldError(
+                        f"feature_catalog.{fid}",
+                        f"semantic_group_id '{catalog_group}' != mapping value '{mapped_group}'",
+                    ))
+
+        # 5. Label column consistency
+        has_label = self.label_column() is not None
+        has_label_time = self.label_time_column() is not None
+        if has_label and not has_label_time:
+            errors.append(FieldError(
+                "label_time_column",
+                "must be set when label_column is set",
+            ))
+        if has_label_time and not has_label:
+            errors.append(FieldError(
+                "label_column",
+                "must be set when label_time_column is set",
+            ))
+
+        # 6. Publishable check for every catalog entry
         for entry in catalog:
-            entry_errors = entry.validate()
-            for e in entry_errors:
-                errors.append(f"feature '{entry.feature_id}': {e}")
+            pub_errors = entry.publishable_errors()
+            for pe in pub_errors:
+                errors.append(pe)
 
         return errors
