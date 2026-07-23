@@ -109,9 +109,11 @@ def _validate_manifest_structure(manifest: dict) -> list[str]:
             errors.append(f"{prefix}.name must be a non-empty string")
             continue
 
-        # Reject path traversal
+        # Reject path traversal and directory navigation
         if "/" in name or "\\" in name:
             errors.append(f"{prefix}.name must be a plain filename, not a path")
+        if name in (".", ".."):
+            errors.append(f"{prefix}.name must not be '.' or '..'")
 
         if name in seen_names:
             errors.append(f"duplicate file name: {name}")
@@ -234,7 +236,14 @@ def populate_manifest(
     data_dir: Path,
     manifest_path: Path = DEFAULT_MANIFEST,
 ) -> bool:
-    """Populate SHA-256, row counts, column counts. Returns True on success."""
+    """Populate SHA-256, row counts, column counts. Returns True only if the
+    resulting manifest passes full validation.
+
+    The manifest file is only overwritten AFTER validation succeeds.
+    If validation fails, the file is unchanged.
+    """
+    import os
+
     if not data_dir.exists():
         print(f"ERROR: Data directory does not exist: {data_dir}")
         return False
@@ -245,7 +254,8 @@ def populate_manifest(
 
     try:
         with open(manifest_path) as f:
-            manifest = yaml.safe_load(f)
+            original_bytes = f.read()
+            manifest = yaml.safe_load(original_bytes)
     except Exception as exc:
         print(f"ERROR: Failed to load manifest: {exc}")
         return False
@@ -289,10 +299,36 @@ def populate_manifest(
         print("\nERROR: One or more required files are missing. Manifest not saved.")
         return False
 
-    with open(manifest_path, "w") as f:
-        yaml.safe_dump(manifest, f, default_flow_style=False, sort_keys=False)
+    # Validate the candidate in-memory before writing
+    candidate_bytes = yaml.safe_dump(manifest, default_flow_style=False, sort_keys=False)
+    try:
+        yaml.safe_load(candidate_bytes)  # verify candidate is valid YAML
+    except Exception as exc:
+        print(f"ERROR: Failed to re-parse candidate manifest: {exc}")
+        return False
 
-    print(f"\nManifest updated: {manifest_path}")
+    # Write candidate to temp file, then validate
+    tmp_path = manifest_path.with_suffix(manifest_path.suffix + ".tmp")
+    try:
+        with open(tmp_path, "w") as f:
+            f.write(candidate_bytes)
+            f.flush()
+            os.fsync(f.fileno())
+
+        ok, errors = validate_manifest(data_dir, tmp_path)
+        if not ok:
+            print("\nERROR: Populated manifest failed validation:")
+            for e in errors:
+                print(f"  FAIL: {e}")
+            return False
+
+        # Atomic replace
+        os.replace(tmp_path, manifest_path)
+    finally:
+        if tmp_path.exists():
+            tmp_path.unlink(missing_ok=True)
+
+    print(f"\nManifest updated and validated: {manifest_path}")
     return True
 
 

@@ -190,10 +190,9 @@ class TestValidateManifestFailClosed:
                 {"name": "bureau.csv", "required": True},
                 {"name": "bureau_balance.csv", "required": True},
             ])
-            assert populate_manifest(data_dir, manifest_path)
-            ok, errors = validate_manifest(data_dir, manifest_path)
-            assert not ok
-            assert any("SK_ID_CURR" in e for e in errors)
+            # populate will compute SHA/rows/cols but then validation fails → returns False
+            ok = populate_manifest(data_dir, manifest_path)
+            assert not ok, "populate should fail when required column is missing"
 
     def test_bureau_balance_requires_status(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -209,10 +208,8 @@ class TestValidateManifestFailClosed:
                 {"name": "bureau.csv", "required": True},
                 {"name": "bureau_balance.csv", "required": True},
             ])
-            assert populate_manifest(data_dir, manifest_path)
-            ok, errors = validate_manifest(data_dir, manifest_path)
-            assert not ok
-            assert any("STATUS" in e for e in errors)
+            ok = populate_manifest(data_dir, manifest_path)
+            assert not ok, "populate should fail when required column (STATUS) is missing"
 
 
 class TestManifestPopulate:
@@ -252,6 +249,55 @@ class TestManifestPopulate:
             assert populate_manifest(data_dir, manifest_path)
             ok, errors = validate_manifest(data_dir, manifest_path)
             assert ok, errors
+
+    def test_failed_populate_preserves_manifest(self):
+        """If populate fails, the manifest file must remain unchanged."""
+        with tempfile.TemporaryDirectory() as tmp:
+            data_dir = Path(tmp) / "data"
+            data_dir.mkdir()
+            for f in ["application_train.csv", "bureau.csv", "bureau_balance.csv"]:
+                (data_dir / f).write_text((FIXTURES / f).read_text())
+            # bureau_balance missing STATUS column
+            with open(data_dir / "bureau_balance.csv", "w") as f:
+                f.write("SK_ID_BUREAU,MONTHS_BALANCE\n100,0\n")
+            manifest_path = Path(tmp) / "manifest.yaml"
+            _write_manifest(manifest_path, [
+                {"name": "application_train.csv", "required": True},
+                {"name": "bureau.csv", "required": True},
+                {"name": "bureau_balance.csv", "required": True},
+            ])
+            before = _sha256_file(manifest_path)
+            ok = populate_manifest(data_dir, manifest_path)
+            assert not ok  # Should fail due to missing STATUS column
+            after = _sha256_file(manifest_path)
+            assert after == before, "Failed populate mutated the manifest!"
+
+    def test_default_manifest_is_internally_consistent(self):
+        """The checked-in manifest must have null metadata (template state).
+        If someone populates with real data, the columns must satisfy the
+        required columns contract."""
+        import yaml
+
+        data = yaml.safe_load(PRODUCTION_MANIFEST.read_text())
+        specs = {f["name"]: f for f in data["files"]}
+
+        from case_studies.home_credit.scripts.validate_manifest import (
+            REQUIRED_COLUMNS,
+            REQUIRED_FILES,
+        )
+
+        for rf in REQUIRED_FILES:
+            spec = specs.get(rf)
+            assert spec is not None, f"Required file {rf} missing from manifest"
+            assert spec.get("required") is True, f"{rf} must have required: true"
+
+            # If metadata is populated, it must be internally consistent
+            cols = spec.get("columns")
+            if cols is not None:
+                min_cols = len(REQUIRED_COLUMNS[rf])
+                assert cols >= min_cols, (
+                    f"{rf}: columns={cols} but requires {min_cols} columns ({REQUIRED_COLUMNS[rf]})"
+                )
 
 
 class TestProductionManifestNotMutated:

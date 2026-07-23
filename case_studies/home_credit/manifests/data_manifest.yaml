@@ -5,10 +5,10 @@ license: "Kaggle competition rules \u2014 verify before redistribution"
 files:
 - name: application_train.csv
   required: true
-  row_count: 1
-  columns: 2
-  header_sha256: b5d4055fae87b54631cfd243b2418907c933f442b1cdce27cf2a717c13d42634
-  sha256: d7b51702e33f0a137f0a8a611391d02220d11fa04e27604ab3e2660b7552d0e2
+  row_count: null
+  columns: null
+  header_sha256: null
+  sha256: null
   description: "Main application table \u2014 one row per loan application. Contains\
     \ TARGET (0/1 default flag)."
 - name: application_test.csv
@@ -22,19 +22,18 @@ files:
     \ evaluation. For unlabeled batch scoring or competition submission only."
 - name: bureau.csv
   required: true
-  row_count: 1
-  columns: 1
-  header_sha256: 2c41daa966a6a8a50b9e93da3a34099771ad674508c6f3d85b63a5a48ec95b42
-  sha256: 1b649e86a211180e73252ce474d2e9449ceba44374fa060783a16e7dd9a25450
-  description: "Historical credit bureau records \u2014 one row per past credit at\
-    \ other financial institutions. Join on SK_ID_CURR."
+  row_count: null
+  columns: null
+  header_sha256: null
+  sha256: null
+  description: "Historical credit bureau records"
 - name: bureau_balance.csv
   required: true
-  row_count: 1
-  columns: 2
-  header_sha256: 0f407e954c15411799a110134b22b19dbba790f0279386a0e0730f955b01c960
-  sha256: e725d860c92e40833e4197b568ce23712f3c3d7cd6d3b731cde497e7289afea1
-  description: Monthly bureau balance snapshots. Join on SK_ID_BUREAU.
+  row_count: null
+  columns: null
+  header_sha256: null
+  sha256: null
+  description: Monthly bureau balance snapshots
 - name: previous_application.csv
   required: false
   row_count: null
