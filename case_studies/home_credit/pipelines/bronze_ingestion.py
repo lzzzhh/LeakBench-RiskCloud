@@ -175,12 +175,13 @@ class BronzeConfig:
 # -----------------------------------------------------------------
 
 def _table_exists(spark, table_name: str) -> bool:
-    """Check if an Iceberg table exists in the catalog."""
-    try:
-        spark.sql(f"DESCRIBE TABLE {table_name}")
-        return True
-    except Exception:
-        return False
+    """Check if an Iceberg table exists using SHOW TABLES. Fails on catalog errors."""
+    parts = table_name.split(".", 2)
+    catalog = parts[0]
+    namespace = parts[1]
+    short = parts[2]
+    rows = spark.sql(f"SHOW TABLES IN `{catalog}`.`{namespace}`").collect()
+    return any(r.tableName == short and not bool(r.isTemporary) for r in rows)
 
 
 def _create_bronze_table(spark, table_name: str, config: BronzeConfig, file_name: str, source_columns: list[str]):
@@ -243,10 +244,12 @@ def ingest_bronze(
     run_id: str,
     git_commit: str = "",
     warehouse: str | None = None,
+    spark=None,
 ) -> dict[str, Any]:
     from case_studies.home_credit.pipelines.spark_env import get_spark, setup_namespaces
 
     started_at = datetime.now(UTC)
+    own_spark = spark is None
 
     # 1. Validate manifest
     ok, errors = validate_manifest(data_dir, manifest_path)
@@ -268,36 +271,42 @@ def ingest_bronze(
 
     source_snapshot_id = _compute_source_snapshot_id(manifest_sha, config.version)
 
+    # Check run directory is clean
+    for check_path in [
+        receipt_dir / "bronze_receipt.yaml",
+        receipt_dir / "snapshot_manifest.yaml",
+        receipt_dir / "bronze_failure.yaml",
+    ]:
+        if check_path.exists():
+            raise RuntimeError(f"run directory already contains publication artifacts: {receipt_dir}")
+
     # 2. Spark
-    spark = get_spark(app_name=f"riskcloud-bronze-{run_id}", warehouse=warehouse)
+    sess = get_spark(app_name=f"riskcloud-bronze-{run_id}", warehouse=warehouse) if own_spark else spark
     try:
-        setup_namespaces(spark)
+        setup_namespaces(sess)
 
         table_results: dict[str, dict[str, Any]] = {}
         for tbl_key, tbl_def in config.tables.items():
             tresult = _ingest_one_table(
-                spark, config, tbl_key, tbl_def, file_specs, data_dir,
+                sess, config, tbl_key, tbl_def, file_specs, data_dir,
                 manifest_sha, source_snapshot_id,
             )
             table_results[tbl_key] = tresult
 
-        # 3. Build receipt (not yet published)
         receipt = _build_receipt(
             run_id, started_at, manifest_path, manifest_sha, source_snapshot_id,
             git_commit, config, table_results,
         )
 
-        # 4. Write snapshot manifest (before receipt)
         receipt_dir.mkdir(parents=True, exist_ok=True)
         _write_snapshot_manifest(receipt_dir, receipt, table_results, git_commit, data_dir)
-
-        # 5. Write receipt LAST (atomic, binds snapshot manifest SHA)
         _write_receipt(receipt_dir, receipt)
 
         return receipt
 
     finally:
-        spark.stop()
+        if own_spark:
+            sess.stop()
 
 
 def _ingest_one_table(
