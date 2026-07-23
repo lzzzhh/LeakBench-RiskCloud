@@ -144,3 +144,26 @@ def smoke_test(spark: SparkSession) -> bool:
             spark.sql(f"DROP TABLE IF EXISTS {table} PURGE")
         except Exception:
             pass
+
+
+# -----------------------------------------------------------------
+# CLI
+# -----------------------------------------------------------------
+
+def main() -> int:
+    """Run the full smoke test with a temporary warehouse."""
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as warehouse:
+        spark = get_spark(app_name="riskcloud-p10-smoke", warehouse=warehouse)
+        try:
+            setup_namespaces(spark)
+            ok = smoke_test(spark)
+            print(f"Spark/Iceberg smoke test: {'PASS' if ok else 'FAIL'}")
+            return 0 if ok else 1
+        finally:
+            spark.stop()
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

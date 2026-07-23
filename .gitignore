@@ -2,3 +2,10 @@ __pycache__/
 *.pyc
 .pytest_cache/
 *.egg-info/
+
+# Spark/Iceberg local warehouse
+/data/iceberg_warehouse/
+spark-warehouse/
+metastore_db/
+derby.log
+.ivy2/

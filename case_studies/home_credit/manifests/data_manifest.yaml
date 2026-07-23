@@ -64,10 +64,3 @@ files:
   header_sha256: null
   sha256: null
   description: Monthly POS and cash loan balance snapshots. Join on SK_ID_PREV.
-split_policy:
-  train: 80% earliest applications by derived date
-  validation: 10% middle
-  oot: "10% latest \u2014 document whether real-time or proxy boundary"
-  unlabeled: application_test
-  boundary_type_note: DAYS_* fields are relative to application date. OOT rules are
-    proxy unless real calendar dates are reconstructed from available columns.
