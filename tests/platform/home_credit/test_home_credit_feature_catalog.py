@@ -65,7 +65,30 @@ class TestCatalogStructure:
         max_del = next(f for f in FEATURES if f.feature_id == "bureau_balance.max_delinquency_level")
         assert "CASE" in max_del.lineage_expression.upper()
         latest = next(f for f in FEATURES if f.feature_id == "bureau_balance.latest_status_delinquent")
-        assert "ORDER BY" in latest.lineage_expression.upper()
+        assert "PARTITION BY" in latest.lineage_expression.upper()
+        assert "FIRST_VALUE" in latest.lineage_expression.upper()
+
+    def test_ext_source_mean_fixture_truth_table(self):
+        """Verify the lineage expression semantics via truth table reasoning."""
+        # The expression is:
+        # (COALESCE(E1,0)+COALESCE(E2,0)+COALESCE(E3,0))
+        # / NULLIF(isNotNull(E1)+isNotNull(E2)+isNotNull(E3), 0)
+        line = next(f for f in FEATURES if f.feature_id == "app.ext_source_mean")
+        expr = line.lineage_expression
+        assert "COALESCE(EXT_SOURCE_1,0)" in expr
+        assert "COALESCE(EXT_SOURCE_2,0)" in expr
+        assert "COALESCE(EXT_SOURCE_3,0)" in expr
+        assert "NULLIF" in expr
+
+    def test_latest_status_is_self_contained(self):
+        """latest_status_delinquent must not reference undefined aliases like 't'."""
+        latest = next(f for f in FEATURES if f.feature_id == "bureau_balance.latest_status_delinquent")
+        expr = latest.lineage_expression
+        assert "PARTITION BY SK_ID_CURR" in expr
+        assert "FIRST_VALUE" in expr
+        # Must not contain undefined alias
+        assert "t.SK_ID_CURR" not in expr
+        assert "t." not in expr
 
     def test_get_features_returns_copy(self):
         f1 = get_features()

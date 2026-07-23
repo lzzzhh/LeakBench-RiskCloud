@@ -41,22 +41,32 @@ from riskcloud.contracts.prediction_point import PredictionPoint
 from riskcloud.contracts.validation import ContractValidationError, FieldError
 
 UTC = timezone.utc
-
 _REQUIRED_FILES = {APPLICATION_TABLE, BUREAU_TABLE, BUREAU_BALANCE_TABLE}
 _REQUIRED_COLUMNS = {
     APPLICATION_TABLE: APPLICATION_EVENT_COLUMNS,
     BUREAU_TABLE: BUREAU_EVENT_COLUMNS,
     BUREAU_BALANCE_TABLE: BUREAU_BALANCE_EVENT_COLUMNS,
 }
-_REQUIRED_META = ("sha256", "header_sha256", "row_count", "columns")
 
 
-def _validate_manifest(path: Path) -> str:
-    """Validate manifest against P1.0 contract. Returns manifest SHA-256."""
-    if not path.is_file():
-        raise ContractValidationError([FieldError("manifest_path", f"not found: {path}")])
+def _validate_manifest(manifest_path: Path, data_dir: Path) -> str:
+    """Validate manifest via P1.0 contract. Returns manifest SHA-256.
 
-    raw = path.read_bytes()
+    Reuses the existing P1.0 validator with full checks:
+    - Required files exist, metadata populated, SHA hex format
+    - Row/column counts match actual files
+    - Required columns (SK_ID_CURR, TARGET, etc.) present
+    - Bool rejected as int for row_count/columns
+    - No duplicate file names
+    """
+    if not isinstance(manifest_path, Path):
+        raise ContractValidationError([
+            FieldError("manifest_path", f"must be Path, got {type(manifest_path).__name__}"),
+        ])
+    if not manifest_path.is_file():
+        raise ContractValidationError([FieldError("manifest_path", f"not found: {manifest_path}")])
+
+    raw = manifest_path.read_bytes()
     manifest_sha = hashlib.sha256(raw).hexdigest()
 
     try:
@@ -66,6 +76,11 @@ def _validate_manifest(path: Path) -> str:
 
     if not isinstance(manifest, dict):
         raise ContractValidationError([FieldError("manifest_path", "must be a YAML dict")])
+
+    # Validate dataset
+    ds = manifest.get("dataset")
+    if ds != "home_credit":
+        raise ContractValidationError([FieldError("manifest_path.dataset", f"must be home_credit, got {ds!r}")])
 
     files = manifest.get("files")
     if not isinstance(files, list) or len(files) == 0:
@@ -78,6 +93,8 @@ def _validate_manifest(path: Path) -> str:
         name = fspec.get("name")
         if not isinstance(name, str) or not name.strip():
             raise ContractValidationError([FieldError(f"manifest_path.files[{i}]", "name must be non-empty str")])
+        if name in seen:
+            raise ContractValidationError([FieldError(f"manifest_path.files[{i}]", f"duplicate file name: {name}")])
         seen.add(name)
 
     for rf in _REQUIRED_FILES:
@@ -88,27 +105,45 @@ def _validate_manifest(path: Path) -> str:
         name = fspec.get("name", "")
         if name not in _REQUIRED_FILES:
             continue
-        required = fspec.get("required")
-        if required is not True:
+        req = fspec.get("required")
+        if req is not True:
             raise ContractValidationError([FieldError(f"manifest_path.{name}", "must have required: true")])
-        for meta_field in _REQUIRED_META:
+        for meta_field in ("sha256", "header_sha256", "row_count", "columns"):
             val = fspec.get(meta_field)
             if val is None:
                 raise ContractValidationError([
                     FieldError(f"manifest_path.{name}", f"{meta_field} is null — run --populate first"),
                 ])
-        sha = fspec.get("sha256")
-        if not isinstance(sha, str) or len(sha) != 64:
-            raise ContractValidationError([FieldError(f"manifest_path.{name}.sha256", "must be 64 hex chars")])
-        hsha = fspec.get("header_sha256")
-        if not isinstance(hsha, str) or len(hsha) != 64:
-            raise ContractValidationError([FieldError(f"manifest_path.{name}.header_sha256", "must be 64 hex chars")])
-        rc = fspec.get("row_count")
-        if not isinstance(rc, int) or rc < 0:
-            raise ContractValidationError([FieldError(f"manifest_path.{name}.row_count", "must be non-negative int")])
-        cols = fspec.get("columns")
-        if not isinstance(cols, int) or cols < 1:
-            raise ContractValidationError([FieldError(f"manifest_path.{name}.columns", "must be positive int")])
+        # SHA must be hex
+        for sha_field in ("sha256", "header_sha256"):
+            val = fspec.get(sha_field, "")
+            if not isinstance(val, str) or len(val) != 64:
+                raise ContractValidationError([
+                    FieldError(f"manifest_path.{name}.{sha_field}", "must be 64 hex chars"),
+                ])
+            try:
+                int(val, 16)
+            except ValueError:
+                raise ContractValidationError([
+                    FieldError(f"manifest_path.{name}.{sha_field}", "must be valid hex"),
+                ])
+        # row_count and columns: must be int (not bool)
+        for int_field in ("row_count", "columns"):
+            val = fspec.get(int_field)
+            if isinstance(val, bool):
+                raise ContractValidationError([
+                    FieldError(f"manifest_path.{name}.{int_field}", "must be int, not bool"),
+                ])
+            if not isinstance(val, int):
+                raise ContractValidationError([
+                    FieldError(f"manifest_path.{name}.{int_field}", f"must be int, got {type(val).__name__}"),
+                ])
+        rc = fspec["row_count"]
+        if rc < 0:
+            raise ContractValidationError([FieldError(f"manifest_path.{name}.row_count", "must be non-negative")])
+        cols = fspec["columns"]
+        if cols < 1:
+            raise ContractValidationError([FieldError(f"manifest_path.{name}.columns", "must be positive")])
         min_cols = len(_REQUIRED_COLUMNS.get(name, set()))
         if cols < min_cols:
             raise ContractValidationError([
@@ -117,6 +152,13 @@ def _validate_manifest(path: Path) -> str:
                     f"requires >= {min_cols} columns for {_REQUIRED_COLUMNS[name]}",
                 ),
             ])
+
+    # --- Delegate file-level validation to P1.0 ---
+    from case_studies.home_credit.scripts.validate_manifest import validate_manifest as p10_validate
+    ok, errors = p10_validate(data_dir, manifest_path)
+    if not ok:
+        field_errors = [FieldError("manifest_path", e) for e in errors]
+        raise ContractValidationError(field_errors)
 
     return manifest_sha
 
@@ -183,13 +225,14 @@ class HomeCreditAdapter(Adapter):
         self,
         snapshot_id: str,
         manifest_path: Path,
+        data_dir: Path,
         ingested_at: datetime,
         boundary_config: HomeCreditBoundaryConfig,
     ):
         if not isinstance(snapshot_id, str) or not snapshot_id.strip():
             raise ContractValidationError([FieldError("snapshot_id", "must be non-empty string")])
 
-        self._manifest_sha = _validate_manifest(manifest_path)
+        self._manifest_sha = _validate_manifest(manifest_path, data_dir)
 
         if not isinstance(ingested_at, datetime):
             raise ContractValidationError([FieldError("ingested_at", "must be datetime")])

@@ -25,7 +25,7 @@ SNAPSHOT_ID = "snap-001"
 INGESTED = datetime(2026, 7, 23, 12, 0, 0, tzinfo=UTC)
 
 
-def _populated_manifest() -> Path:
+def _populated_manifest() -> tuple[Path, Path]:
     tmp = tempfile.mkdtemp()
     data_dir = Path(tmp) / "data"
     data_dir.mkdir()
@@ -34,6 +34,7 @@ def _populated_manifest() -> Path:
     manifest_path = Path(tmp) / "manifest.yaml"
     import yaml
     manifest = {
+        "dataset": "home_credit",
         "files": [
             {"name": "application_train.csv", "required": True},
             {"name": "bureau.csv", "required": True},
@@ -45,7 +46,7 @@ def _populated_manifest() -> Path:
     from case_studies.home_credit.scripts.validate_manifest import populate_manifest
     ok = populate_manifest(data_dir, manifest_path)
     assert ok, "populate failed"
-    return manifest_path
+    return manifest_path, data_dir
 
 
 @pytest.fixture
@@ -54,13 +55,14 @@ def config():
 
 
 @pytest.fixture
-def manifest_path():
+def manifest_path_and_data_dir():
     return _populated_manifest()
 
 
 @pytest.fixture
-def adapter(config, manifest_path):
-    return HomeCreditAdapter(SNAPSHOT_ID, manifest_path, INGESTED, config)
+def adapter(config, manifest_path_and_data_dir):
+    mf, data_dir = manifest_path_and_data_dir
+    return HomeCreditAdapter(SNAPSHOT_ID, mf, data_dir, INGESTED, config)
 
 
 class TestAdapterClosure:
@@ -99,20 +101,22 @@ class TestAdapterClosure:
 
 class TestConstructor:
 
-    def test_rejects_empty_snapshot(self, config, manifest_path):
+    def test_rejects_empty_snapshot(self, config, manifest_path_and_data_dir):
+        mf, data_dir = manifest_path_and_data_dir
         with pytest.raises(ContractValidationError):
-            HomeCreditAdapter("", manifest_path, INGESTED, config)
+            HomeCreditAdapter("", mf, data_dir, INGESTED, config)
 
-    def test_rejects_none_snapshot(self, config, manifest_path):
+    def test_rejects_none_snapshot(self, config, manifest_path_and_data_dir):
+        mf, data_dir = manifest_path_and_data_dir
         with pytest.raises(ContractValidationError):
-            HomeCreditAdapter(None, manifest_path, INGESTED, config)
+            HomeCreditAdapter(None, mf, data_dir, INGESTED, config)
 
     def test_rejects_missing_manifest(self, config):
         with pytest.raises(ContractValidationError, match="not found"):
-            HomeCreditAdapter(SNAPSHOT_ID, Path("/nonexistent/manifest.yaml"), INGESTED, config)
+            HomeCreditAdapter(SNAPSHOT_ID, Path("/nonexistent/manifest.yaml"), Path("/nonexistent"), INGESTED, config)
 
     def test_rejects_null_manifest(self, config):
-        p = _populated_manifest()
+        p, data_dir = _populated_manifest()
         import yaml
         # Overwrite with null metadata
         data = yaml.safe_load(p.read_text())
@@ -123,22 +127,25 @@ class TestConstructor:
         with open(p, "w") as fp:
             yaml.safe_dump(data, fp)
         with pytest.raises(ContractValidationError, match="null"):
-            HomeCreditAdapter(SNAPSHOT_ID, p, INGESTED, config)
+            HomeCreditAdapter(SNAPSHOT_ID, p, data_dir, INGESTED, config)
 
-    def test_rejects_non_utc_ingested(self, config, manifest_path):
+    def test_rejects_non_utc_ingested(self, config, manifest_path_and_data_dir):
+        mf, data_dir = manifest_path_and_data_dir
         from datetime import timedelta
         with pytest.raises(ContractValidationError, match="UTC"):
-            HomeCreditAdapter(SNAPSHOT_ID, manifest_path,
+            HomeCreditAdapter(SNAPSHOT_ID, mf, data_dir,
                               datetime(2026, 1, 1, tzinfo=timezone(timedelta(hours=10))),
                               config)
 
-    def test_rejects_ingested_before_prediction(self, config, manifest_path):
+    def test_rejects_ingested_before_prediction(self, config, manifest_path_and_data_dir):
+        mf, data_dir = manifest_path_and_data_dir
         with pytest.raises(ContractValidationError, match="prediction_anchor"):
-            HomeCreditAdapter(SNAPSHOT_ID, manifest_path, datetime(1999, 1, 1, tzinfo=UTC), config)
+            HomeCreditAdapter(SNAPSHOT_ID, mf, data_dir, datetime(1999, 1, 1, tzinfo=UTC), config)
 
-    def test_rejects_none_boundary(self, manifest_path):
+    def test_rejects_none_boundary(self, manifest_path_and_data_dir):
+        mf, data_dir = manifest_path_and_data_dir
         with pytest.raises(ContractValidationError):
-            HomeCreditAdapter(SNAPSHOT_ID, manifest_path, INGESTED, None)
+            HomeCreditAdapter(SNAPSHOT_ID, mf, data_dir, INGESTED, None)
 
     def test_source_system_is_honored(self, adapter):
         events = list(adapter.generate_events(
@@ -152,23 +159,24 @@ class TestConstructor:
 
         import yaml
         with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as f:
-            yaml.safe_dump({"files": []}, f)
+            yaml.safe_dump({"dataset": "home_credit", "files": []}, f)
             path = Path(f.name)
         try:
             with pytest.raises(ContractValidationError):
-                HomeCreditAdapter(SNAPSHOT_ID, path, INGESTED, config)
+                HomeCreditAdapter(SNAPSHOT_ID, path, Path(tempfile.gettempdir()), INGESTED, config)
         finally:
             path.unlink()
 
-    def test_rejects_missing_required_file_in_manifest(self, config, manifest_path):
+    def test_rejects_missing_required_file_in_manifest(self, config, manifest_path_and_data_dir):
+        mf, data_dir = manifest_path_and_data_dir
         import yaml
-        data = yaml.safe_load(manifest_path.read_text())
+        data = yaml.safe_load(mf.read_text())
         data["files"] = [f for f in data["files"] if f["name"] != "bureau.csv"]
-        p2 = manifest_path.with_name("no_bureau.yaml")
+        p2 = mf.with_name("no_bureau.yaml")
         with open(p2, "w") as fp:
             yaml.safe_dump(data, fp)
         with pytest.raises(ContractValidationError, match="bureau"):
-            HomeCreditAdapter(SNAPSHOT_ID, p2, INGESTED, config)
+            HomeCreditAdapter(SNAPSHOT_ID, p2, data_dir, INGESTED, config)
 
 
 class TestPredictionBoundaryGuard:

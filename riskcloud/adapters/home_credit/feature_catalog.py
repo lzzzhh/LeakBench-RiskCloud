@@ -129,12 +129,12 @@ FEATURES: list[FeatureCatalogEntry] = [
         semantic_group_id="application_external_scores",
         cost_unit=1.0,
         lineage_expression=(
-            "(COALESCE(EXT_SOURCE_1,EXT_SOURCE_2,EXT_SOURCE_3)+"
-            "COALESCE(EXT_SOURCE_2,EXT_SOURCE_3,EXT_SOURCE_1)+"
-            "COALESCE(EXT_SOURCE_3,EXT_SOURCE_1,EXT_SOURCE_2))"
-            "/NULLIF((CASE WHEN EXT_SOURCE_1 IS NOT NULL THEN 1 ELSE 0 END+"
+            "(COALESCE(EXT_SOURCE_1,0)+COALESCE(EXT_SOURCE_2,0)+COALESCE(EXT_SOURCE_3,0))"
+            "/NULLIF("
+            "CASE WHEN EXT_SOURCE_1 IS NOT NULL THEN 1 ELSE 0 END+"
             "CASE WHEN EXT_SOURCE_2 IS NOT NULL THEN 1 ELSE 0 END+"
-            "CASE WHEN EXT_SOURCE_3 IS NOT NULL THEN 1 ELSE 0 END),0)"
+            "CASE WHEN EXT_SOURCE_3 IS NOT NULL THEN 1 ELSE 0 END"
+            ",0)"
         ),
         description="Mean of available external credit scores (null if all three missing)",
     ),
@@ -385,9 +385,9 @@ FEATURES: list[FeatureCatalogEntry] = [
         semantic_group_id="bureau_delinquency_history",
         cost_unit=1.0,
         lineage_expression=(
-            "SELECT CASE WHEN STATUS IN ('1','2','3','4','5') THEN 1 ELSE 0 END "
-            "FROM bureau_balance WHERE SK_ID_CURR=t.SK_ID_CURR AND MONTHS_BALANCE<=0 "
-            "ORDER BY MONTHS_BALANCE DESC, SK_ID_BUREAU ASC LIMIT 1"
+            "CASE WHEN FIRST_VALUE(STATUS) OVER ("
+            "PARTITION BY SK_ID_CURR ORDER BY MONTHS_BALANCE DESC, SK_ID_BUREAU ASC"
+            ") IN ('1','2','3','4','5') THEN 1 ELSE 0 END"
         ),
         description="Whether the most recent month per applicant shows delinquency",
     ),
