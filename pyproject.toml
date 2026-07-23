@@ -23,6 +23,9 @@ dev = [
 testpaths = ["tests"]
 addopts = ["-q", "--strict-markers", "--tb=short"]
 filterwarnings = ["error"]
+markers = [
+    "bronze_integration: tests requiring Java + PySpark + Iceberg runtime",
+]
 
 [tool.ruff]
 line-length = 120

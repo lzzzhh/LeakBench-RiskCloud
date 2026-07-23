@@ -27,7 +27,7 @@ jobs:
           pip install pytest pyyaml
 
       - name: Run tests
-        run: python -m pytest tests/ -v --tb=short
+        run: python -m pytest tests/ -v --tb=short -m "not bronze_integration"
 
       - name: Verify scientific freeze lock
         run: python -m riskcloud.freeze
@@ -53,3 +53,38 @@ jobs:
           java-version: "17"
       - run: pip install "pyspark==3.5.3" "PyYAML>=6"
       - run: python -m case_studies.home_credit.pipelines.spark_env
+
+  bronze-iceberg-integration:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+      - run: pip install "pyspark==3.5.3" "PyYAML>=6" pytest
+      - name: Validate warning filters
+        run: |
+          python -c "
+          from _pytest.config import parse_warning_filter
+          for f in [
+              r'ignore:.*socket\.socket.*:pytest.PytestUnraisableExceptionWarning',
+              r'ignore:.*socket\.socket.*:ResourceWarning',
+          ]:
+              print(parse_warning_filter(f, escape=False))
+          print('OK')
+          "
+      - run: |
+          set -o pipefail
+          python -m pytest \
+            tests/platform/home_credit/test_bronze_iceberg_integration.py \
+            -v --tb=long -m bronze_integration \
+            2>&1 | tee bronze-integration.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: bronze-integration-log
+          path: bronze-integration.log
