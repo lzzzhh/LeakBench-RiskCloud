@@ -231,12 +231,43 @@ class TestAdapterInterface:
                         "event_time_rule": "x",
                         "availability_rule": "y",
                         "stage": "application",
-                        # Missing: owner, lineage, semantic_group_id (publishable violations)
                     }),
                 ]
 
         errors = DraftCatalog().validate_adapter()
         assert len(errors) >= 1
+
+    def test_validate_adapter_rejects_empty_prediction_column(self):
+        class EmptyPredCol(_ValidAdapter):
+            def prediction_time_column(self):
+                return ""
+
+        errors = EmptyPredCol().validate_adapter()
+        assert any("prediction_time_column" in e.field_path for e in errors)
+
+    def test_validate_adapter_rejects_empty_label_column(self):
+        class EmptyLabel(_ValidAdapter):
+            def label_column(self):
+                return ""
+
+        errors = EmptyLabel().validate_adapter()
+        assert any("label_column" in e.field_path for e in errors)
+
+    def test_validate_adapter_rejects_wrong_type_prediction_column(self):
+        class WrongType(_ValidAdapter):
+            def prediction_time_column(self):
+                return 123
+
+        errors = WrongType().validate_adapter()
+        assert any("prediction_time_column" in e.field_path for e in errors)
+
+    def test_validate_adapter_rejects_non_string_semantic_values(self):
+        class BadMapping(_ValidAdapter):
+            def semantic_group_mapping(self):
+                return {"f1": 123}
+
+        errors = BadMapping().validate_adapter()
+        assert any("semantic_group_mapping" in e.field_path for e in errors)
 
 
 # -----------------------------------------------------------------

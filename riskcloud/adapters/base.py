@@ -108,8 +108,32 @@ class Adapter(ABC):
         if not _SEMVER_RE.fullmatch(self.adapter_version):
             errors.append(FieldError("adapter_version", f"must be semver (X.Y.Z), got '{self.adapter_version}'"))
 
-        # 2. Catalog
+        # 1a. Column contracts — must be non-empty strings
+        prediction_col = self.prediction_time_column()
+        if not isinstance(prediction_col, str) or not prediction_col.strip():
+            errors.append(FieldError("prediction_time_column", "must be a non-empty string"))
+
+        label_col = self.label_column()
+        label_time_col = self.label_time_column()
+        for field_name, value in (("label_column", label_col), ("label_time_column", label_time_col)):
+            if value is not None:
+                if not isinstance(value, str) or not value.strip():
+                    errors.append(FieldError(field_name, "must be None or a non-empty string"))
+
+        # 1b. Guard mapping and catalog types
+        mapping = self.semantic_group_mapping()
+        if not isinstance(mapping, dict):
+            errors.append(FieldError("semantic_group_mapping", f"expected dict, got {type(mapping).__name__}"))
+            mapping = {}
+        for k, v in mapping.items():
+            if not isinstance(k, str) or not isinstance(v, str):
+                errors.append(FieldError("semantic_group_mapping", "keys and values must be str"))
+
         catalog = self.build_feature_catalog()
+        if not isinstance(catalog, list):
+            errors.append(FieldError("feature_catalog", f"expected list, got {type(catalog).__name__}"))
+            catalog = []
+        # 2. Catalog non-empty
         if len(catalog) == 0:
             errors.append(FieldError("feature_catalog", "must contain at least one entry"))
 
@@ -122,8 +146,7 @@ class Adapter(ABC):
             dupes = [fid for fid, count in seen.items() if count > 1]
             errors.append(FieldError("feature_catalog", f"duplicate feature_ids: {dupes}"))
 
-        # 3. Catalog ↔ semantic mapping closure
-        mapping = self.semantic_group_mapping()
+        # 3. Catalog ↔ semantic mapping closure (mapping already loaded above)
         catalog_ids = set(feature_ids)
         mapping_ids = set(mapping.keys())
 
@@ -152,9 +175,9 @@ class Adapter(ABC):
                         f"semantic_group_id '{catalog_group}' != mapping value '{mapped_group}'",
                     ))
 
-        # 5. Label column consistency
-        has_label = self.label_column() is not None
-        has_label_time = self.label_time_column() is not None
+        # 5. Label column ↔ label_time column consistency (variables from step 1a)
+        has_label = label_col is not None
+        has_label_time = label_time_col is not None
         if has_label and not has_label_time:
             errors.append(FieldError(
                 "label_time_column",

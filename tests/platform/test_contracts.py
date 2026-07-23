@@ -446,6 +446,57 @@ class TestPayloadOnlyIdentity:
         )
         assert eid1 != eid2
 
+    def test_whitespace_source_id_uses_payload_identity(self):
+        sha = "a" * 64
+        eid_payload = compute_event_id(
+            "test_ds", EntityType.LOAN_APPLICATION, "SK_ID_CURR:100001",
+            EventType.LOAN_APPLICATION, NOW,
+            payload_sha256=sha,
+        )
+        eid_whitespace = compute_event_id(
+            "test_ds", EntityType.LOAN_APPLICATION, "SK_ID_CURR:100001",
+            EventType.LOAN_APPLICATION, NOW,
+            source_record_id="   ",
+            payload_sha256=sha,
+        )
+        # Whitespace source_id should be normalized to None → payload mode
+        assert eid_whitespace == eid_payload
+
+    def test_different_payloads_with_whitespace_source_id_get_different_ids(self):
+        sha1 = "a" * 64
+        sha2 = "b" * 64
+        eid1 = compute_event_id(
+            "test_ds", EntityType.LOAN_APPLICATION, "SK_ID_CURR:100001",
+            EventType.LOAN_APPLICATION, NOW,
+            source_record_id="   ",
+            payload_sha256=sha1,
+        )
+        eid2 = compute_event_id(
+            "test_ds", EntityType.LOAN_APPLICATION, "SK_ID_CURR:100001",
+            EventType.LOAN_APPLICATION, NOW,
+            source_record_id="   ",
+            payload_sha256=sha2,
+        )
+        assert eid1 != eid2
+
+    def test_source_key_encoding_is_unambiguous(self):
+        # source_record_id="A|B" with revision="C"
+        # vs source_record_id="A" with revision="B|C"
+        # should produce different IDs (not collide via delimiter)
+        eid1 = compute_event_id(
+            "test_ds", EntityType.LOAN_APPLICATION, "SK_ID_CURR:100001",
+            EventType.LOAN_APPLICATION, NOW,
+            source_record_id="A|B",
+            source_record_revision="C",
+        )
+        eid2 = compute_event_id(
+            "test_ds", EntityType.LOAN_APPLICATION, "SK_ID_CURR:100001",
+            EventType.LOAN_APPLICATION, NOW,
+            source_record_id="A",
+            source_record_revision="B|C",
+        )
+        assert eid1 != eid2
+
 
 # =================================================================
 # Regression: event_time <= available_at

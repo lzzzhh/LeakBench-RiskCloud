@@ -59,6 +59,33 @@ class EntityType(str, Enum):
 # Canonical event identity
 # -----------------------------------------------------------------
 
+def _canonical_encode(parts: list[str | None]) -> bytes:
+    """Encode identity parts as an unambiguous JSON array.
+
+    Uses JSON array encoding (not delimiter-based) so that `|`,
+    newlines, and other special characters in source-key fields
+    cannot create ambiguous hashes.
+    """
+    return json.dumps(parts, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+
+
+def _normalize_source_id(raw: str | None) -> str | None:
+    """Normalize a source record ID for identity purposes.
+
+    - None → None (use payload identity)
+    - whitespace-only → None (use payload identity)
+    - non-empty after strip → the stripped value
+    """
+    if raw is None:
+        return None
+    if not isinstance(raw, str):
+        return None
+    stripped = raw.strip()
+    if not stripped:
+        return None
+    return stripped
+
+
 def compute_event_id(
     dataset_id: str,
     entity_type: EntityType,
@@ -71,23 +98,23 @@ def compute_event_id(
 ) -> str:
     """Compute canonical event_id from source or content identity.
 
-    Priority: source_record_id > payload_sha256.
-    A discriminator ("source_record" vs "payload_sha256") is included in the
-    hash to prevent ambiguity between the two identity modes.
-
-    Uses UTC-normalized time for same-instant-same-ID.
+    Priority: normalized source_record_id > payload_sha256.
+    Uses JSON array canonical encoding (unambiguous, no delimiter collision).
     Does NOT use payload_uri (URIs are not stable identity).
     """
     utc_time = event_time_utc.astimezone(timezone.utc)
     time_part = utc_time.strftime("%Y-%m-%dT%H:%M:%S.%fZ")
 
-    if source_record_id:
+    sid = _normalize_source_id(source_record_id)
+    srev = source_record_revision.strip() if source_record_revision else ""
+
+    if sid:
         parts = [
             dataset_id, entity_type.value, entity_id, event_type.value,
             time_part,
             "source_record",
-            source_record_id,
-            source_record_revision or "",
+            sid,
+            srev,
         ]
     elif payload_sha256:
         parts = [
@@ -99,7 +126,7 @@ def compute_event_id(
     else:
         raise ValueError("source_record_id or payload_sha256 is required to compute event_id")
 
-    return hashlib.sha256("|".join(parts).encode()).hexdigest()
+    return hashlib.sha256(_canonical_encode(parts)).hexdigest()
 
 
 def compute_expected_event_id(
@@ -112,11 +139,7 @@ def compute_expected_event_id(
     source_record_revision: str = "",
     payload_sha256: str | None = None,
 ) -> str:
-    """Compute event_id from the same inputs that the parser uses.
-
-    Returns a sentinel when neither identity material is present — the
-    parser will reject this case separately.
-    """
+    """Compute event_id from parser inputs with normalization."""
     sid = source_record_id if source_record_id else ""
     srev = source_record_revision if source_record_revision else ""
     sha = payload_sha256 if payload_sha256 else None
@@ -132,6 +155,7 @@ def compute_expected_event_id(
             payload_sha256=sha,
         )
     except ValueError:
+        return ""
         return ""
 
 
