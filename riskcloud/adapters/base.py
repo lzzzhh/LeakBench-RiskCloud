@@ -90,43 +90,55 @@ class Adapter(ABC):
     def validate_adapter(self) -> list[FieldError]:
         """Run closure checks on the adapter configuration.
 
-        All attribute access is guarded — this method must never raise.
+        This method MUST never raise — all errors are returned as FieldError.
         """
         errors: list[FieldError] = []
 
+        _missing = object()
+
+        def _safe_read(field: str, getter) -> object:
+            try:
+                return getter()
+            except Exception as exc:
+                errors.append(FieldError(field, f"failed to read: {type(exc).__name__}: {exc}"))
+                return _missing
+
         def _check_nonempty_str(field: str, value: object) -> None:
+            if value is _missing:
+                return
             if not isinstance(value, str) or not value.strip():
                 errors.append(FieldError(field, "must be a non-empty string"))
 
-        # 1. Identity — guard against None / wrong types
-        _check_nonempty_str("dataset_id", self.dataset_id)
-        _check_nonempty_str("display_name", self.display_name)
-        try:
-            ver = self.adapter_version
-            if not isinstance(ver, str) or not _SEMVER_RE.fullmatch(ver):
-                errors.append(FieldError("adapter_version", f"must be semver (X.Y.Z), got '{ver}'"))
-        except Exception:
-            errors.append(FieldError("adapter_version", "failed to read adapter_version"))
+        # 1. Identity — getter exceptions become FieldError, never propagate
+        dataset_id = _safe_read("dataset_id", lambda: self.dataset_id)
+        display_name = _safe_read("display_name", lambda: self.display_name)
+        adapter_version = _safe_read("adapter_version", lambda: self.adapter_version)
 
-        # 1a. Column contracts
-        try:
-            pcol = self.prediction_time_column()
-        except Exception:
-            pcol = None
+        _check_nonempty_str("dataset_id", dataset_id)
+        _check_nonempty_str("display_name", display_name)
+        if adapter_version is not _missing:
+            if not isinstance(adapter_version, str) or not _SEMVER_RE.fullmatch(adapter_version):
+                errors.append(FieldError("adapter_version", f"must be semver (X.Y.Z), got '{adapter_version}'"))
+
+        # 1a. Column contracts — getter exceptions become FieldError
+        pcol = _safe_read("prediction_time_column", self.prediction_time_column)
         _check_nonempty_str("prediction_time_column", pcol)
 
-        try:
-            label_col = self.label_column()
-        except Exception:
-            label_col = None
-        try:
-            label_time_col = self.label_time_column()
-        except Exception:
-            label_time_col = None
+        label_col = _safe_read("label_column", self.label_column)
+        label_time_col = _safe_read("label_time_column", self.label_time_column)
 
         for fname, val in (("label_column", label_col), ("label_time_column", label_time_col)):
-            if val is not None and (not isinstance(val, str) or not val.strip()):
+            if val is _missing:
+                continue  # error already recorded by _safe_read
+            if val is None:
+                continue  # None is the valid "unsupervised" signal
+            if not isinstance(val, str) or not val.strip():
                 errors.append(FieldError(fname, "must be None or a non-empty string"))
+
+        # Convert sentinel to None for the consistency check below
+        # (if getter failed, treat as absent)
+        label_col_ok = label_col if label_col is not _missing else None
+        label_time_col_ok = label_time_col if label_time_col is not _missing else None
 
         # 2. Build clean catalog (filter non-entries)
         raw_catalog: list = []
@@ -144,6 +156,21 @@ class Adapter(ABC):
             if not isinstance(entry, FeatureCatalogEntry):
                 msg = f"expected FeatureCatalogEntry, got {type(entry).__name__}"
                 errors.append(FieldError(f"feature_catalog[{i}]", msg))
+                continue
+            # Validate internal fields needed for closure ops
+            fid = entry.feature_id
+            if not isinstance(fid, str) or not fid.strip():
+                errors.append(FieldError(
+                    f"feature_catalog[{i}].feature_id",
+                    f"must be a non-empty str, got {type(fid).__name__}",
+                ))
+                continue
+            sgid = entry.semantic_group_id
+            if sgid is not None and not isinstance(sgid, str):
+                errors.append(FieldError(
+                    f"feature_catalog[{i}].semantic_group_id",
+                    f"must be None or str, got {type(sgid).__name__}",
+                ))
                 continue
             catalog.append(entry)
 
@@ -210,8 +237,8 @@ class Adapter(ABC):
                     ))
 
         # 6. Label column ↔ label_time column consistency
-        has_label = label_col is not None
-        has_label_time = label_time_col is not None
+        has_label = label_col_ok is not None
+        has_label_time = label_time_col_ok is not None
         if has_label and not has_label_time:
             errors.append(FieldError("label_time_column", "must be set when label_column is set"))
         if has_label_time and not has_label:

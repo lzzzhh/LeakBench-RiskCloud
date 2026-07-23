@@ -11,6 +11,7 @@ from riskcloud.adapters.base import Adapter
 from riskcloud.contracts.event import EntityType, Event, EventType, compute_event_id
 from riskcloud.contracts.feature_catalog import (
     FeatureCatalogEntry,
+    FeatureStage,
 )
 from riskcloud.contracts.prediction_point import PredictionPoint
 
@@ -310,6 +311,59 @@ class TestAdapterInterface:
 
         errors = BadMapping().validate_adapter()
         assert any("semantic_group_mapping" in e.field_path for e in errors)
+
+    def test_validate_adapter_dataset_id_getter_exception(self):
+        class Exploding(_ValidAdapter):
+            @property
+            def dataset_id(self):
+                raise RuntimeError("backend down")
+
+        errors = Exploding().validate_adapter()
+        assert any("dataset_id" in e.field_path for e in errors)
+
+    def test_validate_adapter_display_name_getter_exception(self):
+        class Exploding(_ValidAdapter):
+            @property
+            def display_name(self):
+                raise RuntimeError("backend down")
+
+        errors = Exploding().validate_adapter()
+        assert any("display_name" in e.field_path for e in errors)
+
+    def test_validate_adapter_label_getter_exception(self):
+        class Exploding(_ValidAdapter):
+            def label_column(self):
+                raise RuntimeError("schema unavailable")
+
+        errors = Exploding().validate_adapter()
+        assert any("label_column" in e.field_path for e in errors)
+
+    def test_validate_adapter_label_time_getter_exception(self):
+        class Exploding(_ValidAdapter):
+            def label_time_column(self):
+                raise RuntimeError("schema unavailable")
+
+        errors = Exploding().validate_adapter()
+        assert any("label_time_column" in e.field_path for e in errors)
+
+    def test_validate_adapter_malformed_catalog_entry(self):
+        class MalformedCatalog(_ValidAdapter):
+            def build_feature_catalog(self):
+                return [
+                    FeatureCatalogEntry(
+                        feature_id=[],  # list, not str
+                        feature_name="x",
+                        entity_type="application",
+                        feature_group="g",
+                        source_system="s",
+                        event_time_rule="x",
+                        availability_rule="x",
+                        stage=FeatureStage.APPLICATION,
+                    ),
+                ]
+
+        errors = MalformedCatalog().validate_adapter()
+        assert any("feature_id" in e.field_path or "feature_catalog" in e.field_path for e in errors)
 
 
 # -----------------------------------------------------------------
