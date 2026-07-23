@@ -29,11 +29,8 @@ _ALLOWED_SPARK_SHUTDOWN = (ConnectionResetError, ConnectionRefusedError, BrokenP
 
 
 def _flatten_exc_group(exc: BaseException) -> list[BaseException]:
-    try:
-        from builtins import BaseExceptionGroup
-    except ImportError:
-        from builtins import ExceptionGroup as BaseExceptionGroup  # type: ignore[assignment]
-    if isinstance(exc, BaseExceptionGroup):
+    group_type = getattr(__builtins__, "BaseExceptionGroup", None)
+    if group_type is not None and isinstance(exc, group_type):
         leaves: list[BaseException] = []
         for child in exc.exceptions:
             leaves.extend(_flatten_exc_group(child))
@@ -87,22 +84,28 @@ def module_setup():
     spark = get_spark(app_name="p12-integration", warehouse=str(warehouse))
     setup_namespaces(spark)
 
+    primary_error = None
     try:
         receipt = ingest_bronze(config, data_dir, manifest_path,
                                 Path(tmp) / "receipts", "p12-a",
                                 git_commit="test", spark=spark)
-    except Exception as exc:
-        _stop_test_spark(spark)
-        pytest.fail(f"ingest_bronze failed: {type(exc).__name__}: {exc}")
-
-    try:
         yield {
             "data_dir": data_dir, "manifest_path": manifest_path,
             "warehouse": warehouse, "manifest_sha": manifest_sha,
             "config": config, "receipt": receipt, "spark": spark,
         }
+    except Exception as exc:
+        primary_error = exc
+        raise
     finally:
-        _stop_test_spark(spark)
+        try:
+            _stop_test_spark(spark)
+        except BaseException as stop_err:
+            if primary_error is None:
+                raise
+            add_note = getattr(primary_error, "add_note", None)
+            if callable(add_note):
+                add_note(f"Spark teardown also failed: {type(stop_err).__name__}")
 
 
 # -----------------------------------------------------------------

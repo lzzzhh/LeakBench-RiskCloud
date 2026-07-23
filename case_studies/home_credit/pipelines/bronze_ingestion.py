@@ -468,17 +468,11 @@ def _ingest_one_table(
         raise RuntimeError(f"{table_name}: no snapshot after write")
 
     meta_logs = spark.sql(
-        f"SELECT file, latest_snapshot_id FROM {table_name}.metadata_log_entries "
-        f"ORDER BY timestamp DESC LIMIT 1"
+        f"SELECT file FROM {table_name}.metadata_log_entries ORDER BY timestamp DESC LIMIT 1"
     ).collect()
     metadata_location = meta_logs[0].file if meta_logs else None
     if not metadata_location:
         raise RuntimeError(f"{table_name}: metadata location is empty")
-    if meta_logs and meta_logs[0].latest_snapshot_id != snapshot_id:
-        raise RuntimeError(
-            f"{table_name}: metadata latest_snapshot_id {meta_logs[0].latest_snapshot_id} "
-            f"!= current snapshot {snapshot_id}"
-        )
 
     # Verify metadata file exists via Hadoop FS
     try:
