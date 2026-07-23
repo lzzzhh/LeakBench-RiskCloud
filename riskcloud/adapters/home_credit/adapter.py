@@ -25,11 +25,15 @@ from riskcloud.adapters.home_credit.feature_catalog import (
 )
 from riskcloud.adapters.home_credit.field_mapping import (
     APPLICATION_EVENT_COLUMNS,
+    APPLICATION_FILE,
     APPLICATION_TABLE,
     BUREAU_BALANCE_EVENT_COLUMNS,
+    BUREAU_BALANCE_FILE,
     BUREAU_BALANCE_TABLE,
     BUREAU_EVENT_COLUMNS,
+    BUREAU_FILE,
     BUREAU_TABLE,
+    RAW_REQUIRED_COLUMNS,
     SOURCE_TABLE_FIELD,
     application_id,
     customer_id,
@@ -41,12 +45,8 @@ from riskcloud.contracts.prediction_point import PredictionPoint
 from riskcloud.contracts.validation import ContractValidationError, FieldError
 
 UTC = timezone.utc
-_REQUIRED_FILES = {APPLICATION_TABLE, BUREAU_TABLE, BUREAU_BALANCE_TABLE}
-_REQUIRED_COLUMNS = {
-    APPLICATION_TABLE: APPLICATION_EVENT_COLUMNS,
-    BUREAU_TABLE: BUREAU_EVENT_COLUMNS,
-    BUREAU_BALANCE_TABLE: BUREAU_BALANCE_EVENT_COLUMNS,
-}
+_REQUIRED_FILES = {APPLICATION_FILE, BUREAU_FILE, BUREAU_BALANCE_FILE}
+_REQUIRED_COLUMNS = RAW_REQUIRED_COLUMNS
 
 
 def _validate_manifest(manifest_path: Path, data_dir: Path) -> str:

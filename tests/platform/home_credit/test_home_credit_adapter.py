@@ -82,7 +82,7 @@ class TestAdapterClosure:
 
     def test_define_prediction_boundary(self, adapter):
         pp = adapter.define_prediction_boundary({
-            "__source_table__": "application_train.csv",
+            "__source_table__": "application_train",
             "SK_ID_CURR": 100001,
             "TARGET": 0,
         })
@@ -149,7 +149,7 @@ class TestConstructor:
 
     def test_source_system_is_honored(self, adapter):
         events = list(adapter.generate_events(
-            {"__source_table__": "application_train.csv", "SK_ID_CURR": 100001, "TARGET": 0},
+            {"__source_table__": "application_train", "SK_ID_CURR": 100001, "TARGET": 0},
             source_system="bronze.home_credit",
         ))
         assert events[0].source_system == "bronze.home_credit"
@@ -192,6 +192,6 @@ class TestPredictionBoundaryGuard:
     def test_rejects_no_target(self, adapter):
         with pytest.raises(ContractValidationError, match="TARGET"):
             adapter.define_prediction_boundary({
-                "__source_table__": "application_train.csv",
+                "__source_table__": "application_train",
                 "SK_ID_CURR": 100001,
             })
