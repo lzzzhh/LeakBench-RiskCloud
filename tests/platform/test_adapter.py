@@ -2,20 +2,17 @@
 
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
-from datetime import datetime, timezone, timedelta
-from typing import Any, Generator, Optional
 
 from riskcloud.adapters.base import Adapter
-from riskcloud.contracts.event import Event, EventType, EntityType, compute_event_id
+from riskcloud.contracts.event import EntityType, Event, EventType, compute_event_id
 from riskcloud.contracts.feature_catalog import (
     FeatureCatalogEntry,
-    FeatureStage,
-    LeakageRisk,
 )
-from riskcloud.contracts.prediction_point import PredictionPoint, Split
+from riskcloud.contracts.prediction_point import PredictionPoint
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
@@ -55,14 +52,18 @@ class _ValidAdapter(Adapter):
     def prediction_time_column(self) -> str:
         return "application_date"
 
-    def label_column(self) -> Optional[str]:
+    def label_column(self) -> str | None:
         return "target"
 
-    def label_time_column(self) -> Optional[str]:
+    def label_time_column(self) -> str | None:
         return "outcome_date"
 
     def generate_events(self, raw_record, source_system=""):
-        eid = compute_event_id(self.dataset_id, EntityType.LOAN_APPLICATION, raw_record["id"], EventType.LOAN_APPLICATION, NOW)
+        eid = compute_event_id(
+            self.dataset_id, EntityType.LOAN_APPLICATION,
+            raw_record["id"], EventType.LOAN_APPLICATION,
+            NOW, source_record_id=f"src:{raw_record['id']}",
+        )
         yield Event.parse({
             "dataset_id": self.dataset_id,
             "event_id": eid,
@@ -74,6 +75,7 @@ class _ValidAdapter(Adapter):
             "available_at": (NOW + timedelta(seconds=1)).isoformat(),
             "ingested_at": (NOW + timedelta(seconds=2)).isoformat(),
             "source_system": source_system or self.dataset_id,
+            "source_record_id": f"src:{raw_record['id']}",
         })
 
     def build_feature_catalog(self):
@@ -245,7 +247,8 @@ class TestImportIsolation:
 
     def test_contracts_dont_import_heavy_deps(self):
         """Contracts must not import pandas/numpy/sklearn/torch/tensorflow, verified via subprocess."""
-        import subprocess, sys
+        import subprocess
+        import sys
         code = """
 import sys
 before = set(sys.modules.keys())
@@ -272,7 +275,8 @@ print("CLEAN")
 
     def test_adapter_dont_import_heavy_deps(self):
         """Adapter base must not import heavy frameworks, verified via subprocess."""
-        import subprocess, sys
+        import subprocess
+        import sys
         code = """
 import sys
 before = set(sys.modules.keys())

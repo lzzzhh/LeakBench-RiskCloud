@@ -4,25 +4,27 @@ Two states:
   - DRAFT: can have UNKNOWN risk, empty owner/lineage
   - PUBLISHABLE: requires owner, lineage, non-UNKNOWN risk
 
-Production paths (training, online serving, LeakBench gate) must use
-is_publishable() check before consuming a catalog entry.
+All optional string fields are type-checked; tags are recursively frozen.
 """
 
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from enum import Enum
-from typing import Any, Optional, Sequence
+from typing import Any
 
 from riskcloud.contracts.validation import (
     ContractValidationError,
     FieldError,
-    coerce_str_nonempty,
+    coerce_bool_opt,
     coerce_enum,
     coerce_float_opt,
-    coerce_bool_opt,
     coerce_int_opt,
+    coerce_str_nonempty,
+    coerce_str_opt,
+    deep_freeze,
+    deep_thaw,
 )
 
 
@@ -54,20 +56,24 @@ class FeatureCatalogEntry:
     availability_rule: str
     stage: FeatureStage
     online_available: bool = False
-    ttl: Optional[int] = None
+    ttl: int | None = None
     owner: str = ""
     version: int = 1
     leakage_risk: LeakageRisk = LeakageRisk.UNKNOWN
-    semantic_group_id: Optional[str] = None
-    cost_unit: Optional[float] = None
-    lineage_expression: Optional[str] = None
+    semantic_group_id: str | None = None
+    cost_unit: float | None = None
+    lineage_expression: str | None = None
     description: str = ""
-    tags: tuple[str, ...] = ()
+    tags: Any = ()
+
+    def __post_init__(self):
+        """Deep-freeze tags for recursive immutability."""
+        object.__setattr__(self, "tags", deep_freeze(self.tags))
 
     # -- strict entry points -------------------------------------------
 
     @classmethod
-    def parse(cls, d: dict[str, Any]) -> "FeatureCatalogEntry":
+    def parse(cls, d: dict[str, Any]) -> FeatureCatalogEntry:
         errors: list[FieldError] = []
         try:
             entry = cls._from_dict_coerce(d, errors)
@@ -78,89 +84,111 @@ class FeatureCatalogEntry:
         return entry
 
     @classmethod
-    def from_dict_unchecked(cls, d: dict[str, Any]) -> "FeatureCatalogEntry":
+    def from_dict_unchecked(cls, d: dict[str, Any]) -> FeatureCatalogEntry:
         errors: list[FieldError] = []
         return cls._from_dict_coerce(d, errors)
 
     @classmethod
-    def _from_dict_coerce(cls, d: dict[str, Any], errors: list[FieldError]) -> "FeatureCatalogEntry":
-        def get_str(k: str) -> str:
+    def _from_dict_coerce(cls, d: dict[str, Any], errors: list[FieldError]) -> FeatureCatalogEntry:
+        def _str(k: str) -> str:
             try:
                 return coerce_str_nonempty(d.get(k), k)
             except ContractValidationError as e:
                 errors.extend(e.errors)
                 return ""
 
-        feature_id = get_str("feature_id")
-        feature_name = get_str("feature_name")
-        entity_type = get_str("entity_type")
-        feature_group = get_str("feature_group")
-        source_system = get_str("source_system")
-        event_time_rule = get_str("event_time_rule")
-        availability_rule = get_str("availability_rule")
+        def _str_opt(k: str) -> str | None:
+            try:
+                return coerce_str_opt(d.get(k), k)
+            except ContractValidationError as e:
+                errors.extend(e.errors)
+                return None
 
+        feature_id = _str("feature_id")
+        feature_name = _str("feature_name")
+        entity_type = _str("entity_type")
+        feature_group = _str("feature_group")
+        source_system = _str("source_system")
+        event_time_rule = _str("event_time_rule")
+        availability_rule = _str("availability_rule")
+
+        # Optional string fields (type-checked, may be empty)
+        owner = d.get("owner", "")
+        if owner is not None and not isinstance(owner, str):
+            errors.append(FieldError("owner", f"expected str, got {type(owner).__name__}"))
+            owner = ""
+        elif owner is None:
+            owner = ""
+
+        semantic_group_id = _str_opt("semantic_group_id")
+
+        lineage_expression = d.get("lineage_expression")
+        if lineage_expression is not None and not isinstance(lineage_expression, str):
+            errors.append(FieldError("lineage_expression", f"expected str, got {type(lineage_expression).__name__}"))
+            lineage_expression = None
+
+        description = d.get("description", "")
+        if description is not None and not isinstance(description, str):
+            errors.append(FieldError("description", f"expected str, got {type(description).__name__}"))
+            description = ""
+        elif description is None:
+            description = ""
+
+        # Stage
+        stage = FeatureStage.PRE_APPLICATION
         try:
             stage = coerce_enum(d.get("stage"), FeatureStage, "stage")
         except ContractValidationError as e:
             errors.extend(e.errors)
-            stage = FeatureStage.PRE_APPLICATION
 
+        # Bools / ints / floats
+        online_available = False
         try:
             online_available = coerce_bool_opt(d.get("online_available"), "online_available") or False
         except ContractValidationError as e:
             errors.extend(e.errors)
-            online_available = False
 
+        ttl = None
         try:
             ttl = coerce_int_opt(d.get("ttl"), "ttl")
         except ContractValidationError as e:
             errors.extend(e.errors)
-            ttl = None
         if ttl is not None and ttl <= 0:
             errors.append(FieldError("ttl", "must be positive", ttl))
 
-        owner = d.get("owner", "")
-        if not isinstance(owner, str):
-            owner = ""
-
+        version = 1
         try:
-            version = coerce_int_opt(d.get("version", 1), "version")
+            v = coerce_int_opt(d.get("version", 1), "version")
+            if v is None:
+                v = 1
+            version = v
         except ContractValidationError as e:
             errors.extend(e.errors)
-            version = None
-        if version is None:
-            version = 1
         if version < 1:
             errors.append(FieldError("version", "must be >= 1", version))
 
+        leakage_risk = LeakageRisk.UNKNOWN
         try:
             leakage_risk = coerce_enum(d.get("leakage_risk", "unknown"), LeakageRisk, "leakage_risk")
         except ContractValidationError as e:
             errors.extend(e.errors)
-            leakage_risk = LeakageRisk.UNKNOWN
 
-        semantic_group_id = d.get("semantic_group_id")
-
+        cost_unit = None
         try:
             cost_unit = coerce_float_opt(d.get("cost_unit"), "cost_unit")
         except ContractValidationError as e:
             errors.extend(e.errors)
-            cost_unit = None
         if cost_unit is not None and cost_unit < 0:
             errors.append(FieldError("cost_unit", "must be non-negative", cost_unit))
 
-        lineage_expression = d.get("lineage_expression")
-
-        description = d.get("description", "")
-        if not isinstance(description, str):
-            description = ""
-
-        tags_raw = d.get("tags", [])
-        if isinstance(tags_raw, list):
-            tags = tuple(str(t) for t in tags_raw)
-        elif isinstance(tags_raw, tuple):
-            tags = tags_raw
+        # Tags: accept list or tuple, fail on wrong type
+        tags_raw = d.get("tags", ())
+        if isinstance(tags_raw, (list, tuple)):
+            tags = tuple(tags_raw)
+        elif tags_raw is None:
+            tags = ()
         else:
+            errors.append(FieldError("tags", f"expected list or tuple, got {type(tags_raw).__name__}", tags_raw))
             tags = ()
 
         return cls(
@@ -186,24 +214,30 @@ class FeatureCatalogEntry:
 
     # -- publishable check ----------------------------------------------
 
-    PUBLISHABLE_REQUIRED = {
-        "owner must be non-empty": lambda e: bool(e.owner.strip()),
-        "leakage_risk must not be UNKNOWN": lambda e: e.leakage_risk != LeakageRisk.UNKNOWN,
-        "lineage_expression must be non-empty": lambda e: e.lineage_expression is not None and e.lineage_expression.strip() != "",
-        "semantic_group_id must be set": lambda e: e.semantic_group_id is not None and e.semantic_group_id.strip() != "",
-    }
+    PUBLISHABLE_CHECKS = [
+        ("owner must be non-empty", lambda e: isinstance(e.owner, str) and bool(e.owner.strip())),
+        ("leakage_risk must not be UNKNOWN", lambda e: e.leakage_risk != LeakageRisk.UNKNOWN),
+        (
+            "lineage_expression must be non-empty",
+            lambda e: isinstance(e.lineage_expression, str) and e.lineage_expression.strip() != "",
+        ),
+        (
+            "semantic_group_id must be set",
+            lambda e: isinstance(e.semantic_group_id, str) and e.semantic_group_id.strip() != "",
+        ),
+    ]
 
     def is_publishable(self) -> bool:
-        """True if this entry can be used in training, online serving, or LeakBench gate."""
         return len(self.publishable_errors()) == 0
 
     def publishable_errors(self) -> list[FieldError]:
-        """Return errors that prevent this entry from being publishable."""
         errors: list[FieldError] = []
-        for msg, predicate in self.PUBLISHABLE_REQUIRED.items():
-            if not predicate(self):
-                errors.append(FieldError(self.feature_id, msg))
-        # Online features must have TTL
+        for msg, predicate in self.PUBLISHABLE_CHECKS:
+            try:
+                if not predicate(self):
+                    errors.append(FieldError(self.feature_id, msg))
+            except Exception:
+                errors.append(FieldError(self.feature_id, f"type error during publishable check: {msg}"))
         if self.online_available and self.ttl is None:
             errors.append(FieldError(self.feature_id, "online_available requires ttl"))
         return errors
@@ -229,7 +263,7 @@ class FeatureCatalogEntry:
             "cost_unit": self.cost_unit,
             "lineage_expression": self.lineage_expression,
             "description": self.description,
-            "tags": list(self.tags),
+            "tags": deep_thaw(self.tags),
         }
 
     def to_json(self) -> str:

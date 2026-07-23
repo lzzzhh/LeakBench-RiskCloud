@@ -2,16 +2,18 @@
 
 Verifies that the upstream LeakBench-Tab scientific core has not been
 modified by checking the freeze lock against the live remote.
+
+Uses a temporary git repository to fetch the upstream commit and verify
+the protected tree SHA, since ls-remote alone does not download objects.
 """
 
 from __future__ import annotations
 
-import json
 import subprocess
 import sys
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional
 
 import yaml
 
@@ -24,7 +26,7 @@ class FreezeLock:
     protected_tree_sha: str
 
     @classmethod
-    def load(cls, path: Path) -> "FreezeLock":
+    def load(cls, path: Path) -> FreezeLock:
         with open(path) as f:
             data = yaml.safe_load(f)
         return cls(
@@ -61,7 +63,11 @@ class FreezeResult:
 
 
 def verify_freeze(lock_path: Path) -> FreezeResult:
-    """Verify the freeze lock against the remote upstream repository."""
+    """Verify the freeze lock against the remote upstream repository.
+
+    Uses a temporary git repo to fetch the upstream commit so that
+    ls-tree can resolve the object.
+    """
     if not lock_path.exists():
         return FreezeResult(
             valid=False,
@@ -71,22 +77,16 @@ def verify_freeze(lock_path: Path) -> FreezeResult:
 
     lock = FreezeLock.load(lock_path)
 
-    # Fetch remote commit
+    # Step 1: Resolve remote HEAD → commit SHA
     try:
         result = subprocess.run(
             ["git", "ls-remote", f"https://github.com/{lock.upstream_repo}.git", "refs/heads/main"],
-            capture_output=True, text=True, timeout=15,
+            capture_output=True, text=True, timeout=15, check=True,
         )
-    except (subprocess.TimeoutExpired, FileNotFoundError) as exc:
+    except (subprocess.TimeoutExpired, subprocess.CalledProcessError, FileNotFoundError) as exc:
         return FreezeResult(
             valid=False, lock=lock,
-            errors=(f"failed to fetch remote: {exc}",),
-        )
-
-    if result.returncode != 0:
-        return FreezeResult(
-            valid=False, lock=lock,
-            errors=(f"git ls-remote failed: {result.stderr.strip()}",),
+            errors=(f"failed to fetch remote HEAD: {exc}",),
         )
 
     parts = result.stdout.strip().split()
@@ -100,16 +100,27 @@ def verify_freeze(lock_path: Path) -> FreezeResult:
             errors=(f"upstream commit changed: locked={lock.upstream_commit} remote={remote_commit}",),
         )
 
-    # Fetch tree SHA for protected path
+    # Step 2: Fetch the commit into a temp repo so we can ls-tree it
     try:
-        result = subprocess.run(
-            ["git", "ls-tree", lock.upstream_commit, lock.protected_path],
-            capture_output=True, text=True, timeout=10,
-        )
-    except (subprocess.TimeoutExpired, FileNotFoundError) as exc:
+        with tempfile.TemporaryDirectory() as tmp:
+            subprocess.run(["git", "-C", tmp, "init", "-q"], check=True, timeout=10)
+            subprocess.run(
+                [
+                    "git", "-C", tmp,
+                    "fetch", "--depth=1",
+                    f"https://github.com/{lock.upstream_repo}.git",
+                    lock.upstream_commit,
+                ],
+                check=True, timeout=30, capture_output=True,
+            )
+            result = subprocess.run(
+                ["git", "-C", tmp, "ls-tree", "FETCH_HEAD", "--", lock.protected_path],
+                check=True, capture_output=True, text=True, timeout=10,
+            )
+    except (subprocess.TimeoutExpired, subprocess.CalledProcessError, FileNotFoundError) as exc:
         return FreezeResult(
             valid=False, lock=lock, remote_commit=remote_commit,
-            errors=(f"failed to check tree: {exc}",),
+            errors=(f"failed to fetch/verify upstream tree: {exc}",),
         )
 
     # ls-tree output: <mode> tree <sha>\t<path>
@@ -139,7 +150,8 @@ def verify_freeze(lock_path: Path) -> FreezeResult:
 
 # CLI entry point
 if __name__ == "__main__":
-    lock_path = Path(__file__).resolve().parents[2] / "scientific-freeze.lock"
+    # parents[1] = repo root (parents[0] = riskcloud/)
+    lock_path = Path(__file__).resolve().parents[1] / "scientific-freeze.lock"
     result = verify_freeze(lock_path)
     print(result.report())
     sys.exit(0 if result.valid else 1)

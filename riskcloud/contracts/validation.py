@@ -10,8 +10,7 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Any, Optional, Sequence
-
+from typing import Any
 
 # -----------------------------------------------------------------
 # Structured errors
@@ -24,7 +23,7 @@ class ContractValidationError(ValueError):
     Never catch this silently; treat it as a data pipeline failure.
     """
 
-    def __init__(self, errors: list["FieldError"], raw_message: str = ""):
+    def __init__(self, errors: list[FieldError], raw_message: str = ""):
         self.errors = errors
         detail = "\n".join(str(e) for e in errors) if errors else raw_message
         super().__init__(detail)
@@ -82,7 +81,30 @@ def coerce_str_nonempty(value: Any, field_path: str) -> str:
     return s
 
 
-def coerce_int_opt(value: Any, field_path: str) -> Optional[int]:
+def coerce_str_opt(value: Any, field_path: str) -> str | None:
+    """Coerce to string; None passes through."""
+    if value is None:
+        return None
+    return coerce_str(value, field_path)
+
+
+def coerce_str_nonempty_opt(value: Any, field_path: str) -> str | None:
+    """Coerce to non-empty string; None passes through."""
+    if value is None:
+        return None
+    return coerce_str_nonempty(value, field_path)
+
+
+def coerce_dict_opt(value: Any, field_path: str) -> dict | None:
+    """Coerce to dict; None passes through."""
+    if value is None:
+        return None
+    if not isinstance(value, dict):
+        raise ContractValidationError([FieldError(field_path, f"expected dict, got {type(value).__name__}", value)])
+    return value
+
+
+def coerce_int_opt(value: Any, field_path: str) -> int | None:
     if value is None:
         return None
     if isinstance(value, bool):
@@ -93,7 +115,7 @@ def coerce_int_opt(value: Any, field_path: str) -> Optional[int]:
     return value  # type: ignore[return-value]
 
 
-def coerce_float_opt(value: Any, field_path: str) -> Optional[float]:
+def coerce_float_opt(value: Any, field_path: str) -> float | None:
     if value is None:
         return None
     if isinstance(value, bool):
@@ -106,7 +128,7 @@ def coerce_float_opt(value: Any, field_path: str) -> Optional[float]:
     return v
 
 
-def coerce_bool_opt(value: Any, field_path: str) -> Optional[bool]:
+def coerce_bool_opt(value: Any, field_path: str) -> bool | None:
     if value is None:
         return None
     if not isinstance(value, bool):
@@ -122,7 +144,9 @@ def coerce_datetime_utc(value: Any, field_path: str) -> datetime:
         return value
     if isinstance(value, str):
         return _parse_dt_strict(value, field_path)
-    raise ContractValidationError([FieldError(field_path, f"expected ISO datetime string, got {type(value).__name__}", value)])
+    raise ContractValidationError([
+        FieldError(field_path, f"expected ISO datetime string, got {type(value).__name__}", value),
+    ])
 
 
 def _parse_dt_strict(s: str, field_path: str) -> datetime:
@@ -156,24 +180,46 @@ def coerce_enum(value: Any, enum_cls: type, field_path: str) -> Any:
                 f"invalid value '{value}' for {enum_cls.__name__}; allowed: {[e.value for e in enum_cls]}",
                 value,
             )]) from exc
-    raise ContractValidationError([FieldError(field_path, f"expected str or {enum_cls.__name__}, got {type(value).__name__}", value)])
+    raise ContractValidationError([
+        FieldError(
+            field_path,
+            f"expected str or {enum_cls.__name__}, got {type(value).__name__}",
+            value,
+        ),
+    ])
 
 
 # -----------------------------------------------------------------
 # Defensive copy helpers for deep immutability
 # -----------------------------------------------------------------
 
-def frozen_dict(d: dict) -> dict:
-    """Return a shallow copy (for use in __post_init__)."""
-    return dict(d)
+# -----------------------------------------------------------------
+# Deep immutability — recursive freeze and thaw
+# -----------------------------------------------------------------
 
-
-def immutable_dict(d: dict) -> Any:
-    """Return a read-only mapping proxy. Use in __post_init__ for deep immutability."""
+def deep_freeze(value: Any) -> Any:
+    """Recursively freeze: dict→MappingProxyType, list/tuple→tuple, set→frozenset."""
     from types import MappingProxyType
-    return MappingProxyType(dict(d))
+    if isinstance(value, dict):
+        return MappingProxyType({k: deep_freeze(v) for k, v in value.items()})
+    if isinstance(value, list):
+        return tuple(deep_freeze(v) for v in value)
+    if isinstance(value, tuple):
+        return tuple(deep_freeze(v) for v in value)
+    if isinstance(value, set):
+        return frozenset(deep_freeze(v) for v in value)
+    return value
 
 
-def frozen_tuple(seq: Sequence) -> tuple:
-    """Convert sequence to tuple (for frozen list-like fields)."""
-    return tuple(seq)
+def deep_thaw(value: Any) -> Any:
+    """Recursively thaw: MappingProxyType→dict, frozenset/tuple→list."""
+    from types import MappingProxyType
+    if isinstance(value, MappingProxyType):
+        return {k: deep_thaw(v) for k, v in value.items()}
+    if isinstance(value, frozenset):
+        return [deep_thaw(v) for v in value]
+    if isinstance(value, tuple):
+        return [deep_thaw(v) for v in value]
+    if isinstance(value, dict):
+        return {k: deep_thaw(v) for k, v in value.items()}
+    return value

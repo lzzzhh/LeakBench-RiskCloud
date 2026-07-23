@@ -1,10 +1,11 @@
-"""Document Parse Result Contract (Section 6.4) — strict, linkage-aware.
+"""Document Parse Result Contract (Section 6.4) — strict, linkage-aware, deeply immutable.
 
-Entity linkage is now modeled as a separate concept from entity references:
-  - has_entity_reference() → True if any entity_id string is present
-  - linkage_status       → unlinked / verified / synthetic
-  - Document features can ONLY enter credit risk models when
-    linkage_status is "verified" or (explicitly allowed) "synthetic".
+Entity linkage:
+  - has_entity_reference() → True if non-empty entity_id string exists
+  - is_credit_model_eligible(allow_synthetic=False) →
+        VERIFIED  → checks linkage_source, linkage_version, linkage_evidence_uri, linked_at
+        SYNTHETIC → only if allow_synthetic=True
+  - processed_at is enforced for persisted parse results
 """
 
 from __future__ import annotations
@@ -13,24 +14,26 @@ import json
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
-from typing import Any, Optional
+from typing import Any
 
 from riskcloud.contracts.validation import (
     ContractValidationError,
     FieldError,
-    coerce_str_nonempty,
-    coerce_float_opt,
     coerce_bool_opt,
-    coerce_enum,
     coerce_datetime_utc,
-    immutable_dict,
+    coerce_enum,
+    coerce_float_opt,
+    coerce_str_nonempty,
+    coerce_str_opt,
+    deep_freeze,
+    deep_thaw,
 )
 
 
 class LinkageStatus(str, Enum):
-    UNLINKED = "unlinked"        # No entity association at all
-    VERIFIED = "verified"         # Real or explicitly synthetic entity link
-    SYNTHETIC = "synthetic"       # Explicitly constructed for testing
+    UNLINKED = "unlinked"
+    VERIFIED = "verified"
+    SYNTHETIC = "synthetic"
 
 
 @dataclass(frozen=True)
@@ -39,41 +42,55 @@ class DocumentParseResult:
     object_uri: str
     content_sha256: str
     document_type: str
-    entity_id: Optional[str] = None
+    entity_id: str | None = None
     linkage_status: LinkageStatus = LinkageStatus.UNLINKED
     linkage_source: str = ""
     linkage_version: str = ""
     linkage_evidence_uri: str = ""
-    linked_at: Optional[datetime] = None
-    ocr_text_uri: Optional[str] = None
-    layout_json_uri: Optional[str] = None
-    extracted_fields_json: Optional[str] = None
-    ocr_confidence: Optional[float] = None
-    field_coverage: Optional[float] = None
-    image_quality_score: Optional[float] = None
-    tamper_signal: Optional[bool] = None
-    model_version: Optional[str] = None
+    linked_at: datetime | None = None
+    ocr_text_uri: str | None = None
+    layout_json_uri: str | None = None
+    extracted_fields_json: str | None = None
+    ocr_confidence: float | None = None
+    field_coverage: float | None = None
+    image_quality_score: float | None = None
+    tamper_signal: bool | None = None
+    model_version: str | None = None
     processed_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
-    metadata: dict[str, Any] = field(default_factory=dict)
+    metadata: Any = field(default_factory=dict)
 
     def __post_init__(self):
-        """Defensive copy → MappingProxyType for deep immutability."""
-        object.__setattr__(self, "metadata", immutable_dict(self.metadata))
+        """Deep-freeze metadata for recursive immutability."""
+        object.__setattr__(self, "metadata", deep_freeze(self.metadata))
 
     # -- entity linkage -------------------------------------------------
 
     def has_entity_reference(self) -> bool:
-        """True if any entity_id string is present (weak check)."""
-        return self.entity_id is not None and self.entity_id.strip() != ""
+        """True if entity_id is a non-empty string."""
+        return isinstance(self.entity_id, str) and self.entity_id.strip() != ""
 
-    def is_credit_model_eligible(self) -> bool:
-        """Only verified or explicitly synthetic links may enter credit models."""
-        return self.linkage_status in (LinkageStatus.VERIFIED, LinkageStatus.SYNTHETIC)
+    def is_credit_model_eligible(self, *, allow_synthetic: bool = False) -> bool:
+        """Only verified (with full evidence) or explicitly allowed synthetic links."""
+        if not self.has_entity_reference():
+            return False
+
+        if self.linkage_status == LinkageStatus.VERIFIED:
+            return all([
+                self.linkage_source.strip() != "",
+                self.linkage_version.strip() != "",
+                self.linkage_evidence_uri.strip() != "",
+                self.linked_at is not None,
+            ])
+
+        if self.linkage_status == LinkageStatus.SYNTHETIC:
+            return allow_synthetic
+
+        return False
 
     # -- strict entry points -------------------------------------------
 
     @classmethod
-    def parse(cls, d: dict[str, Any]) -> "DocumentParseResult":
+    def parse(cls, d: dict[str, Any]) -> DocumentParseResult:
         errors: list[FieldError] = []
         try:
             doc = cls._from_dict_coerce(d, errors)
@@ -84,67 +101,104 @@ class DocumentParseResult:
         return doc
 
     @classmethod
-    def from_dict_unchecked(cls, d: dict[str, Any]) -> "DocumentParseResult":
+    def from_dict_unchecked(cls, d: dict[str, Any]) -> DocumentParseResult:
         errors: list[FieldError] = []
         return cls._from_dict_coerce(d, errors)
 
     @classmethod
-    def _from_dict_coerce(cls, d: dict[str, Any], errors: list[FieldError]) -> "DocumentParseResult":
-        def get_str(k: str) -> str:
+    def _from_dict_coerce(cls, d: dict[str, Any], errors: list[FieldError]) -> DocumentParseResult:
+        def _str(k: str) -> str:
             try:
                 return coerce_str_nonempty(d.get(k), k)
             except ContractValidationError as e:
                 errors.extend(e.errors)
                 return ""
 
-        document_id = get_str("document_id")
-        object_uri = get_str("object_uri")
-        content_sha256 = get_str("content_sha256")
-        document_type = get_str("document_type")
+        def _str_opt(k: str) -> str | None:
+            try:
+                return coerce_str_opt(d.get(k), k)
+            except ContractValidationError as e:
+                errors.extend(e.errors)
+                return None
+
+        document_id = _str("document_id")
+        object_uri = _str("object_uri")
+        content_sha256 = _str("content_sha256")
+        document_type = _str("document_type")
 
         if len(content_sha256) != 64:
             errors.append(FieldError("content_sha256", "must be 64 hex characters", content_sha256))
 
-        entity_id = d.get("entity_id")
+        # entity_id — type-checked
+        entity_id_raw = d.get("entity_id")
+        entity_id: str | None = None
+        if entity_id_raw is not None:
+            try:
+                entity_id = coerce_str_opt(entity_id_raw, "entity_id")
+            except ContractValidationError as e:
+                errors.extend(e.errors)
 
+        linkage_status = LinkageStatus.UNLINKED
         try:
             linkage_status = coerce_enum(d.get("linkage_status", "unlinked"), LinkageStatus, "linkage_status")
         except ContractValidationError as e:
             errors.extend(e.errors)
-            linkage_status = LinkageStatus.UNLINKED
 
+        # Linkage evidence — type-checked
         linkage_source = d.get("linkage_source", "")
-        linkage_version = d.get("linkage_version", "")
-        linkage_evidence_uri = d.get("linkage_evidence_uri", "")
+        if linkage_source is not None and not isinstance(linkage_source, str):
+            errors.append(FieldError("linkage_source", f"expected str, got {type(linkage_source).__name__}"))
+            linkage_source = ""
+        elif linkage_source is None:
+            linkage_source = ""
 
-        linked_at_value = d.get("linked_at")
-        linked_at: Optional[datetime] = None
-        if linked_at_value is not None:
+        linkage_version = d.get("linkage_version", "")
+        if linkage_version is not None and not isinstance(linkage_version, str):
+            errors.append(FieldError("linkage_version", f"expected str, got {type(linkage_version).__name__}"))
+            linkage_version = ""
+        elif linkage_version is None:
+            linkage_version = ""
+
+        linkage_evidence_uri = d.get("linkage_evidence_uri", "")
+        if linkage_evidence_uri is not None and not isinstance(linkage_evidence_uri, str):
+            errors.append(FieldError(
+                "linkage_evidence_uri",
+                f"expected str, got {type(linkage_evidence_uri).__name__}",
+            ))
+            linkage_evidence_uri = ""
+        elif linkage_evidence_uri is None:
+            linkage_evidence_uri = ""
+
+        linked_at = None
+        lt_raw = d.get("linked_at")
+        if lt_raw is not None:
             try:
-                linked_at = coerce_datetime_utc(linked_at_value, "linked_at")
+                linked_at = coerce_datetime_utc(lt_raw, "linked_at")
             except ContractValidationError as e:
                 errors.extend(e.errors)
 
-        # If linkage_status is verified/synthetic but no entity_id → inconsistent
+        # Enforce entity_id when linkage_status is verified/synthetic
         if linkage_status in (LinkageStatus.VERIFIED, LinkageStatus.SYNTHETIC):
-            if entity_id is None or (isinstance(entity_id, str) and not entity_id.strip()):
-                errors.append(FieldError(
-                    "entity_id",
-                    f"required when linkage_status={linkage_status.value}",
-                ))
+            if not entity_id or not entity_id.strip():
+                errors.append(FieldError("entity_id", f"required when linkage_status={linkage_status.value}"))
 
-        # Processed_at
-        try:
-            processed_at = coerce_datetime_utc(d.get("processed_at", datetime.now(timezone.utc).isoformat()), "processed_at")
-        except ContractValidationError as e:
-            errors.extend(e.errors)
-            processed_at = datetime.now(timezone.utc)
+        # processed_at — must be present for persisted results, fail on wrong type
+        processed_at_raw = d.get("processed_at")
+        if processed_at_raw is None:
+            errors.append(FieldError("processed_at", "required for persisted parse results"))
+            processed_at = datetime(1970, 1, 1, tzinfo=timezone.utc)
+        else:
+            try:
+                processed_at = coerce_datetime_utc(processed_at_raw, "processed_at")
+            except ContractValidationError as e:
+                errors.extend(e.errors)
+                processed_at = datetime(1970, 1, 1, tzinfo=timezone.utc)
 
-        # Optional model version
-        model_version = d.get("model_version")
+        # Optional model_version
+        model_version = _str_opt("model_version")
 
         # Float quality scores
-        def coerce_opt_float_range(k: str) -> Optional[float]:
+        def _range_float(k: str) -> float | None:
             val = d.get(k)
             if val is None:
                 return None
@@ -157,23 +211,26 @@ class DocumentParseResult:
                 errors.append(FieldError(k, "must be in [0, 1]", v))
             return v
 
-        ocr_confidence = coerce_opt_float_range("ocr_confidence")
-        field_coverage = coerce_opt_float_range("field_coverage")
-        image_quality_score = coerce_opt_float_range("image_quality_score")
+        ocr_confidence = _range_float("ocr_confidence")
+        field_coverage = _range_float("field_coverage")
+        image_quality_score = _range_float("image_quality_score")
 
+        tamper_signal = None
         try:
             tamper_signal = coerce_bool_opt(d.get("tamper_signal"), "tamper_signal")
         except ContractValidationError as e:
             errors.extend(e.errors)
-            tamper_signal = None
 
-        ocr_text_uri = d.get("ocr_text_uri")
-        layout_json_uri = d.get("layout_json_uri")
-        extracted_fields_json = d.get("extracted_fields_json")
+        ocr_text_uri = _str_opt("ocr_text_uri")
+        layout_json_uri = _str_opt("layout_json_uri")
+        extracted_fields_json = _str_opt("extracted_fields_json")
 
-        metadata = d.get("metadata", {})
-        if not isinstance(metadata, dict):
-            metadata = {}
+        # Metadata — type-checked
+        metadata_raw = d.get("metadata", {})
+        if not isinstance(metadata_raw, dict):
+            errors.append(FieldError("metadata", f"expected dict, got {type(metadata_raw).__name__}"))
+            metadata_raw = {}
+        metadata = metadata_raw
 
         return cls(
             document_id=document_id,
@@ -221,7 +278,7 @@ class DocumentParseResult:
             "tamper_signal": self.tamper_signal,
             "model_version": self.model_version,
             "processed_at": self.processed_at.isoformat(),
-            "metadata": dict(self.metadata),
+            "metadata": deep_thaw(self.metadata),
         }
 
     def to_json(self) -> str:

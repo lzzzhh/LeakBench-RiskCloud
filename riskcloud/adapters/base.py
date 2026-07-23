@@ -12,14 +12,15 @@ from __future__ import annotations
 
 import re
 from abc import ABC, abstractmethod
-from typing import Any, Generator, Optional
+from collections.abc import Generator
+from typing import Any
 
 from riskcloud.contracts.event import Event
-from riskcloud.contracts.feature_catalog import FeatureCatalogEntry, LeakageRisk
+from riskcloud.contracts.feature_catalog import FeatureCatalogEntry
 from riskcloud.contracts.prediction_point import PredictionPoint
 from riskcloud.contracts.validation import FieldError
 
-_SEMVER_RE = re.compile(r"^\d+\.\d+\.\d+")
+_SEMVER_RE = re.compile(r"^\d+\.\d+\.\d+$")
 
 
 class Adapter(ABC):
@@ -57,11 +58,11 @@ class Adapter(ABC):
         """Column used to derive prediction_time."""
 
     @abstractmethod
-    def label_column(self) -> Optional[str]:
+    def label_column(self) -> str | None:
         """Target column name, or None."""
 
     @abstractmethod
-    def label_time_column(self) -> Optional[str]:
+    def label_time_column(self) -> str | None:
         """Column used to derive label_time (> prediction_time)."""
 
     # -- event generation (abstract method) ------------------------------
@@ -104,7 +105,7 @@ class Adapter(ABC):
             errors.append(FieldError("dataset_id", "must be non-empty"))
         if not self.display_name.strip():
             errors.append(FieldError("display_name", "must be non-empty"))
-        if not _SEMVER_RE.match(self.adapter_version):
+        if not _SEMVER_RE.fullmatch(self.adapter_version):
             errors.append(FieldError("adapter_version", f"must be semver (X.Y.Z), got '{self.adapter_version}'"))
 
         # 2. Catalog

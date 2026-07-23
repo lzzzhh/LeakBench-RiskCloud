@@ -10,8 +10,6 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import pytest
-
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
@@ -38,12 +36,12 @@ class TestFreezeLock:
         assert "tree_sha" in data["protected"]
 
     def test_freeze_verification_runs(self):
-        """Freeze verification module runs without crashing (may fail if offline)."""
-        from riskcloud.freeze import verify_freeze, FreezeResult
+        """Freeze verification must return valid=True when upstream is unchanged."""
+        from riskcloud.freeze import FreezeResult, verify_freeze
         lock = REPO_ROOT / "scientific-freeze.lock"
         result = verify_freeze(lock)
         assert isinstance(result, FreezeResult)
-        assert result.report()  # string output
+        assert result.valid, f"Freeze verification FAILED:\n{result.report()}"
 
 
 # -----------------------------------------------------------------
@@ -53,10 +51,10 @@ class TestFreezeLock:
 class TestDocumentation:
 
     def test_contracts_have_docstrings(self):
-        import riskcloud.contracts.event as evt
-        import riskcloud.contracts.prediction_point as pp
-        import riskcloud.contracts.feature_catalog as fc
         import riskcloud.contracts.document as doc
+        import riskcloud.contracts.event as evt
+        import riskcloud.contracts.feature_catalog as fc
+        import riskcloud.contracts.prediction_point as pp
         for mod, cls_name in [
             (evt, "Event"),
             (pp, "PredictionPoint"),
