@@ -1,0 +1,39 @@
+# P1.0 — Snapshot Manifest
+
+# Records the identity of a data snapshot: which files, which commit,
+# which code version produced this snapshot, and the Iceberg snapshot ID.
+# Every training run must reference a snapshot manifest.
+
+snapshot:
+  snapshot_id: null            # Iceberg snapshot ID (populated after ingestion)
+  dataset: home_credit
+  phase: "1.0"
+  created_at: null             # ISO 8601
+
+input:
+  data_manifest_sha256: null   # SHA-256 of the data_manifest.yaml at ingestion time
+  data_dir: null               # Path to raw CSV directory
+
+code:
+  git_commit: null             # Git commit of the pipeline code
+  adapter_version: null        # Home Credit adapter version
+  boundary_version: null       # Prediction boundary rules version
+
+bronze:
+  tables: []                   # List of {table_name, iceberg_table, row_count, sha256}
+
+silver:
+  tables: []                   # List of {table_name, iceberg_table, row_count}
+
+gold:
+  prediction_points_table: null
+  feature_table: null
+  strict_view_table: null
+  full_view_table: null
+
+quality:
+  primary_key_violations: 0
+  duplicate_prediction_ids: 0
+  temporal_boundary_violations: 0
+  lineage_resolved: true
+  reproduction_receipt_url: null

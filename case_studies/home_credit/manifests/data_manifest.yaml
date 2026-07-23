@@ -1,0 +1,71 @@
+# P1.0 — Home Credit Data Manifest
+
+# This file records the identity and shape of every raw input file.
+# It is the immutable baseline that all subsequent pipelines reference.
+# Populate it BEFORE running any Bronze ingestion.
+
+dataset: home_credit
+source: Kaggle Home Credit Default Risk competition
+download_url: https://www.kaggle.com/competitions/home-credit-default-risk/data
+license: Kaggle competition rules — verify before redistribution
+
+# Files that must be present for the full pipeline.
+# For the first vertical slice, only application_train, bureau, bureau_balance are required.
+files:
+  - name: application_train.csv
+    required: true
+    row_count: null       # populate after download
+    columns: null         # populate after download
+    sha256: null          # sha256sum of the file
+    description: "Main application table — one row per loan application"
+
+  - name: application_test.csv
+    required: false
+    row_count: null
+    columns: null
+    sha256: null
+    description: "Test set (no TARGET) — used for OOT scoring in Phase 1.5+"
+
+  - name: bureau.csv
+    required: true
+    row_count: null
+    columns: null
+    sha256: null
+    description: "Historical credit bureau records — one row per past credit"
+
+  - name: bureau_balance.csv
+    required: true
+    row_count: null
+    columns: null
+    sha256: null
+    description: "Monthly bureau balance snapshots"
+
+  - name: previous_application.csv
+    required: false
+    row_count: null
+    columns: null
+    sha256: null
+    description: "Previous loan applications at Home Credit"
+
+  - name: installments_payments.csv
+    required: false
+    row_count: null
+    columns: null
+    sha256: null
+    description: "Installment payment history"
+
+  - name: credit_card_balance.csv
+    required: false
+    row_count: null
+    columns: null
+    sha256: null
+    description: "Monthly credit card balance snapshots"
+
+  - name: POS_CASH_balance.csv
+    required: false
+    row_count: null
+    columns: null
+    sha256: null
+    description: "Monthly POS and cash loan balance snapshots"
+
+# After populating, run: python case_studies/home_credit/scripts/validate_manifest.py
