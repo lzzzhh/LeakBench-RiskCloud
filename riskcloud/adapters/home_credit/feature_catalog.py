@@ -335,7 +335,12 @@ FEATURES: list[FeatureCatalogEntry] = [
         leakage_risk=LeakageRisk.TEMPORAL,
         semantic_group_id="bureau_delinquency_history",
         cost_unit=1.0,
-        lineage_expression="max(STATUS) WHERE MONTHS_BALANCE <= 0",
+        lineage_expression=(
+            "MAX(CASE STATUS WHEN '0' THEN 0 WHEN '1' THEN 1 WHEN '2' THEN 2 "
+            "WHEN '3' THEN 3 WHEN '4' THEN 4 WHEN '5' THEN 5 "
+            "WHEN 'C' THEN 0 WHEN 'X' THEN NULL ELSE NULL END) "
+            "WHERE MONTHS_BALANCE <= 0"
+        ),
         description="Maximum delinquency status level across all months",
     ),
     FeatureCatalogEntry(
@@ -352,8 +357,12 @@ FEATURES: list[FeatureCatalogEntry] = [
         leakage_risk=LeakageRisk.TEMPORAL,
         semantic_group_id="bureau_delinquency_history",
         cost_unit=1.0,
-        lineage_expression="STATUS = delinquent_any FOR month with max(MONTHS_BALANCE <= 0)",
-        description="Whether the most recent month shows delinquency",
+        lineage_expression=(
+            "SELECT STATUS FROM (SELECT STATUS, MONTHS_BALANCE FROM bureau_balance "
+            "WHERE MONTHS_BALANCE <= 0 ORDER BY MONTHS_BALANCE DESC, SK_ID_BUREAU ASC "
+            "LIMIT 1) t WHERE STATUS IN ('1','2','3','4','5') → 1 ELSE 0"
+        ),
+        description="Whether the most recent month (deterministic tiebreak) shows delinquency",
     ),
 ]
 

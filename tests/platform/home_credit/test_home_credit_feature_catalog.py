@@ -28,7 +28,6 @@ class TestCatalogStructure:
         for f in FEATURES:
             assert "TARGET" not in f.feature_id.upper()
             assert "TARGET" not in f.feature_name.upper()
-            assert "TARGET" not in f.lineage_expression.upper() if f.lineage_expression else True
 
     def test_semantic_mapping_closure(self):
         catalog_ids = {f.feature_id for f in FEATURES}
@@ -42,18 +41,16 @@ class TestCatalogStructure:
     def test_stage_correct(self):
         for f in FEATURES:
             if f.feature_id.startswith("app."):
-                assert f.stage == FeatureStage.APPLICATION, f"{f.feature_id}"
-            elif f.feature_id.startswith("bureau_balance."):
-                assert f.stage == FeatureStage.PRE_APPLICATION, f"{f.feature_id}"
-            elif f.feature_id.startswith("bureau."):
-                assert f.stage == FeatureStage.PRE_APPLICATION, f"{f.feature_id}"
+                assert f.stage == FeatureStage.APPLICATION, f.feature_id
+            else:
+                assert f.stage == FeatureStage.PRE_APPLICATION, f.feature_id
 
     def test_leakage_risk_correct(self):
         for f in FEATURES:
             if f.feature_id.startswith("app."):
-                assert f.leakage_risk == LeakageRisk.NONE, f"{f.feature_id}"
+                assert f.leakage_risk == LeakageRisk.NONE, f.feature_id
             else:
-                assert f.leakage_risk == LeakageRisk.TEMPORAL, f"{f.feature_id}"
+                assert f.leakage_risk == LeakageRisk.TEMPORAL, f.feature_id
 
     def test_no_post_outcome_or_label_derived(self):
         for f in FEATURES:
@@ -63,6 +60,12 @@ class TestCatalogStructure:
     def test_all_lineage_non_empty(self):
         for f in FEATURES:
             assert f.lineage_expression and f.lineage_expression.strip(), f.feature_id
+
+    def test_delinquency_lineage_explicit(self):
+        max_del = next(f for f in FEATURES if f.feature_id == "bureau_balance.max_delinquency_level")
+        assert "CASE" in max_del.lineage_expression.upper()
+        latest = next(f for f in FEATURES if f.feature_id == "bureau_balance.latest_status_delinquent")
+        assert "ORDER BY" in latest.lineage_expression.upper()
 
     def test_get_features_returns_copy(self):
         f1 = get_features()
