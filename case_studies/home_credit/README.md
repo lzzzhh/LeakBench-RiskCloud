@@ -1,49 +1,68 @@
 # Home Credit — Phase 1
 
-## P1.0 — Data Inventory & Execution Skeleton
+## P1.0 — Data Inventory & Execution Skeleton (AUDIT OPEN)
 
 ### Setup
 
 ```bash
-# Download Home Credit data from Kaggle
-# Place CSVs in a directory, e.g. ~/data/home_credit/
+# 1. Download Home Credit data from Kaggle
+#    Place CSVs in a directory, e.g. ~/data/home_credit/
 
-# Populate the data manifest
+# 2. Populate the data manifest
 python case_studies/home_credit/scripts/validate_manifest.py \
     --data-dir ~/data/home_credit/ \
     --populate
 
-# Validate the manifest
+# 3. Validate the manifest
 python case_studies/home_credit/scripts/validate_manifest.py \
     --data-dir ~/data/home_credit/
 
-# Install dependencies
-pip install pyspark pyiceberg pyyaml
+# 4. Install dependencies
+pip install pyspark==3.5.* pyyaml
 
-# Verify Spark/Iceberg environment
-python -c "
-from case_studies.home_credit.pipelines.spark_env import get_spark, setup_namespaces
-spark = get_spark()
-setup_namespaces(spark)
-spark.sql('SHOW NAMESPACES IN riskcloud').show()
-spark.stop()
-"
+# 5. Run the Spark/Iceberg smoke test
+python -m case_studies.home_credit.pipelines.spark_env  # (if __main__ added)
 ```
 
-### Directory Layout
+### Compatiblity Matrix
+
+| Component | Version |
+|---|---|
+| PySpark | 3.5 |
+| Iceberg (Spark runtime) | 1.6.1 |
+| Scala binary | 2.12 |
+| Java | 11 or 17 |
+| Python | >= 3.10 |
+
+### Directory Layout (Phase 0 contract compliant)
 
 ```
+riskcloud/
+├── adapters/
+│   └── home_credit/              # P1.1: Adapter (per Phase 0 contract)
+│       ├── __init__.py
+│       ├── adapter.py
+│       ├── boundary.py
+│       ├── field_mapping.py
+│       └── feature_catalog.py
+
 case_studies/home_credit/
 ├── manifests/
-│   ├── data_manifest.yaml      # Input file inventory (SHA, row counts, columns)
-│   └── snapshot_manifest.yaml  # Snapshot identity (Iceberg snapshot ID, code SHA)
+│   ├── data_manifest.yaml            # Input file inventory
+│   └── snapshot_manifest.template.yaml  # Run identity template
 ├── pipelines/
-│   └── spark_env.py            # SparkSession builder with Iceberg
-├── adapters/                   # P1.1: Home Credit Adapter
-├── configs/                    # Pipeline configuration
+│   └── spark_env.py                  # SparkSession + Iceberg + smoke test
+├── configs/
 ├── scripts/
-│   └── validate_manifest.py    # Manifest validation & population
-└── tests/                      # P1.1+: Pipeline tests
+│   └── validate_manifest.py          # Manifest validation & population
+└── README.md
+
+tests/platform/home_credit/
+├── test_manifest.py
+├── test_adapter.py                   # P1.1+
+├── test_boundary.py                  # P1.1+
+├── test_feature_catalog.py           # P1.1+
+└── test_spark_iceberg_smoke.py
 ```
 
 ### First Vertical Slice
@@ -52,14 +71,6 @@ The initial slice only requires:
 - `application_train.csv`
 - `bureau.csv`
 - `bureau_balance.csv`
-
-These three tables are sufficient to validate the core Phase 1 engineering risks:
-1. One-to-many aggregation without sample inflation
-2. Bureau history temporal boundary enforcement
-3. Sub-table aggregation before joining
-4. Prediction Point construction before feature building
-5. Snapshot and re-run auditability
-6. Strict vs. full feature view separation
 
 After this slice passes, add `previous_application`, `installments_payments`,
 `credit_card_balance`, and `POS_CASH_balance`.

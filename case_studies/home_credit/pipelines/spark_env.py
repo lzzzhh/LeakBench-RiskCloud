@@ -1,32 +1,56 @@
-"""P1.0 — Spark/Iceberg Local Execution Skeleton.
+"""P1.0 — Spark/Iceberg Local Execution Environment.
 
-Provides a SparkSession builder configured for local Iceberg development.
+Pinned compatibility matrix:
+  - PySpark 3.5.x
+  - Iceberg 1.6.x
+  - Scala 2.12
+  - Java 11 or 17
+
+The session automatically configures the Iceberg Spark runtime JAR via
+spark.jars.packages. In air-gapped environments, download the JAR manually
+and set SPARK_ICEBERG_JAR_PATH instead.
+
 Usage:
-    from case_studies.home_credit.pipelines.spark_env import get_spark
+    from case_studies.home_credit.pipelines.spark_env import get_spark, setup_namespaces, smoke_test
 
     spark = get_spark()
-    spark.sql("CREATE NAMESPACE IF NOT EXISTS bronze")
-    spark.sql("CREATE NAMESPACE IF NOT EXISTS silver")
-    spark.sql("CREATE NAMESPACE IF NOT EXISTS gold")
-    spark.sql("CREATE NAMESPACE IF NOT EXISTS audit")
+    setup_namespaces(spark)
+    smoke_test(spark)  # creates → writes → reads → verifies snapshot → cleans up
 """
 
 from __future__ import annotations
 
 import os
 from pathlib import Path
+from typing import TYPE_CHECKING
 
-from pyspark.sql import SparkSession
+if TYPE_CHECKING:
+    from pyspark.sql import SparkSession
 
-# Default warehouse location — can be overridden via env var
+# -----------------------------------------------------------------
+# Pinned version matrix
+# -----------------------------------------------------------------
+
+ICEBERG_VERSION = "1.6.1"
+SCALA_BINARY = "2.12"
+SPARK_MAJOR = "3.5"
+
+ICEBERG_RUNTIME = (
+    f"org.apache.iceberg:iceberg-spark-runtime-{SPARK_MAJOR}_{SCALA_BINARY}:{ICEBERG_VERSION}"
+)
+
+# Warehouse location
 _WAREHOUSE = os.environ.get(
     "RISKCLOUD_ICEBERG_WAREHOUSE",
     str(Path(__file__).resolve().parents[3] / "data" / "iceberg_warehouse"),
 )
 
-# Iceberg catalog name
 CATALOG = "riskcloud"
 
+
+# -----------------------------------------------------------------
+# Spark session
+# -----------------------------------------------------------------
 
 def get_spark(
     app_name: str = "riskcloud-home-credit",
@@ -34,44 +58,89 @@ def get_spark(
 ) -> SparkSession:
     """Create a local Spark session with Iceberg support.
 
-    Requires:
-        pip install pyspark pyiceberg
-
-    The session uses:
-    - A local Derby metastore (or Hadoop catalog for simple setups)
-    - Iceberg Spark extensions
-    - Timezone = UTC (essential for temporal contracts)
+    Java 11 or 17 required. The Iceberg runtime JAR is pulled via Maven
+    coordinates. Set SPARK_ICEBERG_JAR_PATH to use a pre-downloaded JAR.
     """
-    warehouse_path = warehouse or _WAREHOUSE
+    from pyspark.sql import SparkSession
 
-    # Ensure warehouse directory exists
+    warehouse_path = warehouse or _WAREHOUSE
     Path(warehouse_path).mkdir(parents=True, exist_ok=True)
 
-    spark = (
+    builder = (
         SparkSession.builder
         .appName(app_name)
         .master("local[*]")
-        # Iceberg catalog — using Hadoop catalog for local simplicity
+        # Iceberg catalog
         .config("spark.sql.extensions", "org.apache.iceberg.spark.extensions.IcebergSparkSessionExtensions")
         .config(f"spark.sql.catalog.{CATALOG}", "org.apache.iceberg.spark.SparkCatalog")
         .config(f"spark.sql.catalog.{CATALOG}.type", "hadoop")
         .config(f"spark.sql.catalog.{CATALOG}.warehouse", warehouse_path)
-        # Session defaults for temporal integrity
+        # Deterministic execution (reduces plan variation)
         .config("spark.sql.session.timeZone", "UTC")
-        # Disable adaptive query execution for deterministic re-runs in Phase 1
         .config("spark.sql.adaptive.enabled", "false")
-        # Limit broadcast to avoid OOM on bureau tables
         .config("spark.sql.autoBroadcastJoinThreshold", "50MB")
-        .getOrCreate()
     )
 
-    # Set log level to WARN to reduce noise
-    spark.sparkContext.setLogLevel("WARN")
+    # Runtime JAR — use env var override for air-gapped envs
+    jar_path = os.environ.get("SPARK_ICEBERG_JAR_PATH")
+    if jar_path:
+        builder = builder.config("spark.jars", jar_path)
+    else:
+        builder = builder.config("spark.jars.packages", ICEBERG_RUNTIME)
 
+    spark = builder.getOrCreate()
+    spark.sparkContext.setLogLevel("WARN")
     return spark
 
 
+# -----------------------------------------------------------------
+# Namespaces
+# -----------------------------------------------------------------
+
 def setup_namespaces(spark: SparkSession) -> None:
-    """Create the standard Iceberg namespaces if they don't exist."""
+    """Create the standard Iceberg namespaces."""
     for ns in ("bronze", "silver", "gold", "audit"):
         spark.sql(f"CREATE NAMESPACE IF NOT EXISTS {CATALOG}.{ns}")
+
+
+# -----------------------------------------------------------------
+# Smoke test (creates → writes → reads → snapshot → cleans up)
+# -----------------------------------------------------------------
+
+def smoke_test(spark: SparkSession) -> bool:
+    """Run a create-insert-read-snapshot smoke test. Returns True on pass."""
+    table = f"{CATALOG}.audit.p10_smoke"
+
+    try:
+        # Ensure namespace
+        spark.sql(f"CREATE NAMESPACE IF NOT EXISTS {CATALOG}.audit")
+
+        # Create
+        spark.sql(f"""
+            CREATE OR REPLACE TABLE {table} (
+                id BIGINT,
+                value STRING
+            ) USING iceberg
+        """)
+
+        # Insert
+        spark.sql(f"INSERT INTO {table} VALUES (1, 'ok'), (2, 'phase1')")
+
+        # Read
+        rows = spark.sql(f"SELECT * FROM {table} ORDER BY id").collect()
+        assert len(rows) == 2, f"Expected 2 rows, got {len(rows)}"
+        assert rows[0].id == 1 and rows[0].value == "ok"
+
+        # Verify snapshot exists
+        snapshots = spark.sql(f"SELECT snapshot_id FROM {table}.snapshots").collect()
+        assert len(snapshots) >= 1, "No snapshots found"
+
+        return True
+    except Exception as exc:
+        print(f"Smoke test FAILED: {exc}")
+        return False
+    finally:
+        try:
+            spark.sql(f"DROP TABLE IF EXISTS {table} PURGE")
+        except Exception:
+            pass

@@ -1,0 +1,62 @@
+# P1.0 — Snapshot Manifest Template
+
+# This is a TEMPLATE. Actual runs produce immutable instances under:
+#   case_studies/home_credit/manifests/runs/<run_id>/snapshot_manifest.yaml
+
+manifest:
+  manifest_id: null            # Platform-level UUID or hash
+  status: PENDING              # PENDING | RUNNING | COMPLETE | FAILED
+  created_at: null             # ISO 8601
+
+input:
+  data_manifest_sha256: null   # SHA-256 of the populated data_manifest.yaml
+  data_dir: null
+
+code:
+  git_commit: null
+  adapter_version: null
+  boundary_version: null
+
+tables:
+  bronze:
+    application_train:
+      iceberg_table: null      # e.g. riskcloud.bronze.application_train
+      iceberg_snapshot_id: null
+      metadata_location: null
+      row_count: null
+      schema_sha256: null
+    bureau:
+      iceberg_table: null
+      iceberg_snapshot_id: null
+      metadata_location: null
+      row_count: null
+      schema_sha256: null
+    bureau_balance:
+      iceberg_table: null
+      iceberg_snapshot_id: null
+      metadata_location: null
+      row_count: null
+      schema_sha256: null
+
+  silver:
+    application_train: { iceberg_table: null, iceberg_snapshot_id: null, row_count: null }
+    bureau: { iceberg_table: null, iceberg_snapshot_id: null, row_count: null }
+    bureau_balance: { iceberg_table: null, iceberg_snapshot_id: null, row_count: null }
+
+  gold:
+    prediction_points: { iceberg_table: null, iceberg_snapshot_id: null, row_count: null }
+    feature_values: { iceberg_table: null, iceberg_snapshot_id: null, row_count: null }
+    strict_view: { iceberg_table: null, iceberg_snapshot_id: null, row_count: null }
+    full_view: { iceberg_table: null, iceberg_snapshot_id: null, row_count: null }
+
+quality:
+  status: NOT_RUN              # NOT_RUN | RUNNING | PASS | FAIL
+  primary_key_violations: null
+  duplicate_prediction_ids: null
+  temporal_boundary_violations: null
+  train_rule_fit_leakage: null
+  lineage_resolved: null
+
+receipt:
+  uri: null                    # S3/GCS URI of the signed receipt
+  sha256: null
