@@ -1,0 +1,23 @@
+# Bronze V1 ingestion configuration
+# See docs/adr/0003-bronze-publication-and-idempotency.md
+
+bronze:
+  version: hc-bronze-v1
+  catalog: riskcloud
+  namespace: bronze
+  schema_mode: all_source_columns_as_string
+  partition_field: _source_manifest_sha256
+  write_mode: overwrite_partitions
+
+tables:
+  application_train:
+    file: application_train.csv
+    table: riskcloud.bronze.application_train
+
+  bureau:
+    file: bureau.csv
+    table: riskcloud.bronze.bureau
+
+  bureau_balance:
+    file: bureau_balance.csv
+    table: riskcloud.bronze.bureau_balance
