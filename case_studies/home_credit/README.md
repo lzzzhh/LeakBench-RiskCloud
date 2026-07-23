@@ -29,6 +29,8 @@ python -m pytest tests/ -v
 ### Adapter
 
 ```python
+from pathlib import Path
+from datetime import datetime, timezone
 from riskcloud.adapters.home_credit.adapter import HomeCreditAdapter
 from riskcloud.adapters.home_credit.boundary import HomeCreditBoundaryConfig
 
@@ -36,6 +38,7 @@ config = HomeCreditBoundaryConfig.from_yaml("case_studies/home_credit/configs/bo
 adapter = HomeCreditAdapter(
     snapshot_id="snap-001",
     manifest_path=Path("case_studies/home_credit/manifests/data_manifest.yaml"),
+    data_dir=Path("~/data/home_credit").expanduser(),
     ingested_at=datetime.now(timezone.utc),
     boundary_config=config,
 )
