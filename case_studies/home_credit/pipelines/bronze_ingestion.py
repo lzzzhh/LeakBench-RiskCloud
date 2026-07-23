@@ -16,6 +16,7 @@ import csv
 import hashlib
 import json
 import os
+import shutil
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -340,9 +341,7 @@ def ingest_bronze(
         receipt = _build_receipt(
             run_id, started_at, manifest_path, manifest_sha, source_snapshot_id, git_commit, config, table_results
         )
-        receipt_dir.mkdir(parents=True, exist_ok=True)
-        _write_snapshot_manifest(receipt_dir, receipt, table_results, git_commit, data_dir)
-        _write_receipt(receipt_dir, receipt)
+        _publish_success_artifacts(receipt_dir, receipt, table_results, git_commit, data_dir)
         return receipt
 
     except BaseException as exc:
@@ -467,12 +466,37 @@ def _ingest_one_table(
     if snapshot_id is None:
         raise RuntimeError(f"{table_name}: no snapshot after write")
 
-    meta_logs = spark.sql(
-        f"SELECT file FROM {table_name}.metadata_log_entries ORDER BY timestamp DESC LIMIT 1"
-    ).collect()
-    metadata_location = meta_logs[0].file if meta_logs else None
-    if not metadata_location:
-        raise RuntimeError(f"{table_name}: metadata location is empty")
+    # Current snapshot and metadata via Iceberg Java API
+    try:
+        jtable = spark._jvm.org.apache.iceberg.spark.Spark3Util.loadIcebergTable(
+            spark._jsparkSession, table_name
+        )
+        jtable.refresh()
+        java_snapshot = jtable.currentSnapshot()
+        if java_snapshot is None:
+            raise RuntimeError(f"{table_name}: Java current snapshot is empty")
+        java_snapshot_id = java_snapshot.snapshotId()
+        if java_snapshot_id != snapshot_id:
+            raise RuntimeError(
+                f"{table_name}: Java snapshot {java_snapshot_id} != SQL snapshot {snapshot_id}"
+            )
+        ops = jtable.operations()
+        current_meta = ops.refresh()
+        metadata_snap = current_meta.currentSnapshot()
+        if metadata_snap is None:
+            raise RuntimeError(f"{table_name}: TableMetadata has no current snapshot")
+        if metadata_snap.snapshotId() != snapshot_id:
+            raise RuntimeError(
+                f"{table_name}: TableMetadata snapshot {metadata_snap.snapshotId()} "
+                f"!= committed snapshot {snapshot_id}"
+            )
+        metadata_location = current_meta.metadataFileLocation()
+        if not metadata_location:
+            raise RuntimeError(f"{table_name}: current metadata location is empty")
+    except RuntimeError:
+        raise
+    except Exception as exc:
+        raise RuntimeError(f"{table_name}: failed to load current metadata: {exc}") from exc
 
     # Verify metadata file exists via Hadoop FS
     try:
@@ -561,8 +585,12 @@ def _build_receipt(
     }
 
 
-def _write_snapshot_manifest(receipt_dir, receipt, table_results, git_commit, data_dir):
-    manifest = {
+def _publish_success_artifacts(receipt_dir, receipt, table_results, git_commit, data_dir):
+    """Atomically publish snapshot manifest + receipt via staging directory."""
+    if receipt_dir.exists():
+        raise RuntimeError(f"run directory already exists: {receipt_dir}")
+
+    snapshot_manifest = {
         "manifest": {
             "manifest_id": receipt["receipt"]["run_id"],
             "status": "COMPLETE",
@@ -593,19 +621,39 @@ def _write_snapshot_manifest(receipt_dir, receipt, table_results, git_commit, da
         "quality": {"status": "NOT_RUN"},
         "receipt": {"uri": str(receipt_dir / "bronze_receipt.yaml"), "sha256": None},
     }
-    _atomic_write_yaml(receipt_dir / "snapshot_manifest.yaml", manifest)
+
+    stage_dir = receipt_dir.with_name(f".{receipt_dir.name}.{os.getpid()}.staging")
+    if stage_dir.exists():
+        shutil.rmtree(stage_dir)
+
+    try:
+        stage_dir.mkdir(parents=True)
+        snapshot_sha = _atomic_write_yaml(stage_dir / "snapshot_manifest.yaml", snapshot_manifest)
+        receipt["quality"]["snapshot_manifest_sha256"] = snapshot_sha
+        _atomic_write_yaml(stage_dir / "bronze_receipt.yaml", receipt)
+        _fsync_directory(stage_dir)
+        os.replace(stage_dir, receipt_dir)
+        _fsync_directory(receipt_dir.parent)
+    finally:
+        if stage_dir.exists():
+            shutil.rmtree(stage_dir)
 
 
-def _write_receipt(receipt_dir, receipt):
-    sm_sha = _sha256_file(receipt_dir / "snapshot_manifest.yaml")
-    receipt["quality"]["snapshot_manifest_sha256"] = sm_sha
-    _atomic_write_yaml(receipt_dir / "bronze_receipt.yaml", receipt)
+def _fsync_directory(path: Path) -> None:
+    if not hasattr(os, "O_DIRECTORY"):
+        return
+    fd = os.open(path, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
 
 
 def _write_failure_artifact(
     receipt_dir, run_id, manifest_sha, manifest_path, data_dir, git_commit, config, completed_tables, current_table, exc
 ):
-    receipt_dir.mkdir(parents=True, exist_ok=True)
+    failure_dir = receipt_dir.with_name(f"{receipt_dir.name}.failed")
+    failure_dir.mkdir(parents=True, exist_ok=True)
     failure = {
         "failure": {
             "version": 1,
@@ -619,4 +667,4 @@ def _write_failure_artifact(
         "code": {"git_commit": git_commit, "bronze_version": config.version},
         "progress": {"completed_tables": completed_tables, "failed_table": current_table},
     }
-    _atomic_write_yaml(receipt_dir / "bronze_failure.yaml", failure)
+    _atomic_write_yaml(failure_dir / "bronze_failure.yaml", failure)

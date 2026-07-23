@@ -29,7 +29,8 @@ _ALLOWED_SPARK_SHUTDOWN = (ConnectionResetError, ConnectionRefusedError, BrokenP
 
 
 def _flatten_exc_group(exc: BaseException) -> list[BaseException]:
-    group_type = getattr(__builtins__, "BaseExceptionGroup", None)
+    import builtins
+    group_type = getattr(builtins, "BaseExceptionGroup", None)
     if group_type is not None and isinstance(exc, group_type):
         leaves: list[BaseException] = []
         for child in exc.exceptions:
