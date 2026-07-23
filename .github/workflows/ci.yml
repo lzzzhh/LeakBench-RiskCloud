@@ -66,6 +66,17 @@ jobs:
           distribution: temurin
           java-version: "17"
       - run: pip install "pyspark==3.5.3" "PyYAML>=6" pytest
+      - name: Validate warning filters
+        run: |
+          python -c "
+          from _pytest.config import parse_warning_filter
+          for f in [
+              r'ignore:.*socket\.socket.*:pytest.PytestUnraisableExceptionWarning',
+              r'ignore:.*socket\.socket.*:ResourceWarning',
+          ]:
+              print(parse_warning_filter(f, escape=False))
+          print('OK')
+          "
       - run: |
           set -o pipefail
           python -m pytest \

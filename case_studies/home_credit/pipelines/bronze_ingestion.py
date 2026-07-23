@@ -486,17 +486,16 @@ def _ingest_one_table(
         cls_name = str(jtable.getClass().getName())
         cl = jtable.getClass().getClassLoader()
         if cl is None:
-            cl_str = "null"
-        else:
-            cl_str = str(cl.getClass().getName())
-            try:
-                has_ops_cls = cl.loadClass("org.apache.iceberg.HasTableOperations")
-            except Exception as exc:
-                raise RuntimeError(
-                    f"{table_name}: failed to load HasTableOperations via {cl_str}: {exc}"
-                ) from exc
-            if not has_ops_cls.isAssignableFrom(jtable.getClass()):
-                raise RuntimeError(f"{table_name}: {cls_name} does not implement HasTableOperations")
+            raise RuntimeError(f"{table_name}: runtime class {cls_name} has no accessible ClassLoader")
+        cl_str = str(cl.getClass().getName())
+        try:
+            has_ops_cls = cl.loadClass("org.apache.iceberg.HasTableOperations")
+        except Exception as exc:
+            raise RuntimeError(
+                f"{table_name}: failed to load HasTableOperations via {cl_str}: {exc}"
+            ) from exc
+        if not has_ops_cls.isAssignableFrom(jtable.getClass()):
+            raise RuntimeError(f"{table_name}: {cls_name} does not implement HasTableOperations")
 
         ops = jtable.operations()
         current_meta = ops.refresh()

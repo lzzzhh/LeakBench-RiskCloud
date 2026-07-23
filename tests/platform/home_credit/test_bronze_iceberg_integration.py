@@ -18,13 +18,14 @@ from riskcloud.adapters.home_credit.field_mapping import RAW_REQUIRED_COLUMNS
 
 pytestmark = [
     pytest.mark.bronze_integration,
-    # PySpark 3.5.3 local socket readers rely on GC to close raw sockets.
+    # PySpark 3.5.3 local socket readers may leave raw socket
+    # cleanup to garbage collection. Filter restricted to
+    # socket.socket unraisable/resource warnings in this module.
     pytest.mark.filterwarnings(
-        r"ignore:Exception ignored in: <socket\.socket.*:"
-        r"_pytest.warning_types.PytestUnraisableExceptionWarning"
+        r"ignore:.*socket\.socket.*:pytest.PytestUnraisableExceptionWarning"
     ),
     pytest.mark.filterwarnings(
-        r"ignore:unclosed <socket\.socket.*:ResourceWarning"
+        r"ignore:.*socket\.socket.*:ResourceWarning"
     ),
 ]
 
@@ -113,6 +114,7 @@ def module_setup():
             "data_dir": data_dir, "manifest_path": manifest_path,
             "warehouse": warehouse, "manifest_sha": manifest_sha,
             "config": config, "receipt": receipt, "spark": spark,
+            "receipt_dir": Path(tmp) / "receipts",
         }
     except BaseException as exc:
         primary_error = exc
@@ -246,3 +248,28 @@ class TestDifferentManifest:
             ).collect()[0][0]
             assert count_a == module_setup["receipt"]["tables"][tbl_key]["source_row_count"]
             assert count_b == receipt_b["tables"][tbl_key]["source_row_count"]
+
+
+# -----------------------------------------------------------------
+# Publication and metadata gate
+# -----------------------------------------------------------------
+
+class TestPublicationGate:
+
+    def test_runtime_metadata_and_disk_publication(self, module_setup):
+        receipt = module_setup["receipt"]
+        for tres in receipt["tables"].values():
+            assert tres["iceberg_snapshot_id"] == tres["java_snapshot_id"] == tres["metadata_snapshot_id"]
+            assert tres["iceberg_runtime_class"]
+            assert tres["iceberg_class_loader"]
+            assert tres["iceberg_class_loader"] != "null"
+            assert tres["metadata_location"]
+
+        rd = module_setup["receipt_dir"]
+        disk_receipt = yaml.safe_load((rd / "bronze_receipt.yaml").read_text(encoding="utf-8"))
+        disk_manifest = yaml.safe_load((rd / "snapshot_manifest.yaml").read_text(encoding="utf-8"))
+        assert disk_receipt["receipt"]["status"] == "COMPLETE"
+        assert disk_manifest["manifest"]["status"] == "COMPLETE"
+        sm_path = rd / "snapshot_manifest.yaml"
+        assert disk_receipt["quality"]["snapshot_manifest_sha256"] == _sha256(sm_path.read_bytes())
+        assert {p.name for p in rd.iterdir()} == {"snapshot_manifest.yaml", "bronze_receipt.yaml"}
