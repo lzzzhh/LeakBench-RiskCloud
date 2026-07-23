@@ -1,14 +1,20 @@
 """P1.2 — Bronze Ingestion Pipeline.
 
-Writes raw CSV data into Iceberg Bronze tables with deterministic metadata.
-All source columns are stored as STRING. Uses overwritePartitions for idempotent re-runs.
+Writes raw CSV data into Iceberg Bronze tables.
+- All source columns as STRING
+- Header SHA from raw first-line bytes (P1.0-compatible)
+- DataFrameWriterV2 with overwritePartitions
+- _raw_row_sha256 with column-order-sensitive canonical JSON
+- Content fingerprint via toLocalIterator
+- Receipt published last, after all tables written and verified
 """
 
 from __future__ import annotations
 
+import csv
 import hashlib
 import json
-import os
+import sys
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -34,6 +40,12 @@ BRONZE_META_COLUMNS = [
 ]
 BRONZE_SCHEMA_VERSION = 1
 TABLES_REQUIRED = {APPLICATION_FILE, BUREAU_FILE, BUREAU_BALANCE_FILE}
+EXPECTED_TABLE_KEYS = {"application_train", "bureau", "bureau_balance"}
+REQUIRED_TARGETS = {
+    "application_train": "riskcloud.bronze.application_train",
+    "bureau": "riskcloud.bronze.bureau",
+    "bureau_balance": "riskcloud.bronze.bureau_balance",
+}
 
 UTC = timezone.utc
 
@@ -54,29 +66,36 @@ def _sha256_file(path: Path) -> str:
     return h.hexdigest()
 
 
+def _sha256_header_raw(path: Path) -> str:
+    """SHA-256 of the first line as raw bytes (P1.0-compatible)."""
+    with open(path, "rb") as f:
+        return _sha256(f.readline())
+
+
 def _compute_source_snapshot_id(manifest_sha: str, bronze_version: str) -> str:
     parts = json.dumps(["home_credit", manifest_sha, bronze_version], separators=(",", ":"))
     return _sha256(parts.encode())
 
 
 def _row_hash(row_values: list[str | None], columns: list[str]) -> str:
-    """Deterministic row hash from canonical JSON object. null included, not omitted."""
+    """Deterministic row hash. Column order preserved, null included."""
     obj = {col: val for col, val in zip(columns, row_values)}
-    raw = json.dumps(obj, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
+    raw = json.dumps(obj, ensure_ascii=False, separators=(",", ":"))
     return _sha256(raw.encode())
 
 
 def _content_fingerprint(spark, table: str, manifest_sha: str) -> dict[str, Any]:
-    """Compute deterministic multiset fingerprint from _raw_row_sha256 counts."""
-
-    df = spark.sql(f"SELECT _raw_row_sha256 FROM {table} WHERE _source_manifest_sha256 = '{manifest_sha}'")
-    # Group and count, then stream
-    counts = df.groupBy("_raw_row_sha256").count().orderBy("_raw_row_sha256").collect()
+    """Content fingerprint via toLocalIterator (streaming, not collect)."""
+    df = spark.sql(
+        f"SELECT _raw_row_sha256 FROM {table} "
+        f"WHERE _source_manifest_sha256 = '{manifest_sha}'"
+    )
+    counts = df.groupBy("_raw_row_sha256").count().orderBy("_raw_row_sha256")
 
     h = hashlib.sha256()
     total = 0
     distinct = 0
-    for row in counts:
+    for row in counts.toLocalIterator():
         line = f"{row._raw_row_sha256}:{row['count']}\n"
         h.update(line.encode())
         total += row["count"]
@@ -99,35 +118,57 @@ class BronzeConfig:
         with open(path) as f:
             data = yaml.safe_load(f)
         b = data["bronze"]
+
+        # Exact value checks
+        for field, expected in [
+            ("version", "hc-bronze-v1"),
+            ("catalog", "riskcloud"),
+            ("namespace", "bronze"),
+            ("schema_mode", "all_source_columns_as_string"),
+            ("partition_field", "_source_manifest_sha256"),
+            ("write_mode", "overwrite_partitions"),
+        ]:
+            actual = b.get(field)
+            if actual != expected:
+                raise ValueError(f"bronze.{field} must be {expected!r}, got {actual!r}")
+
         self.version = b["version"]
         self.catalog = b["catalog"]
         self.namespace = b["namespace"]
         self.partition_field = b["partition_field"]
         self.write_mode = b["write_mode"]
 
-        if self.write_mode != "overwrite_partitions":
-            raise ValueError(f"write_mode must be overwrite_partitions, got {self.write_mode!r}")
-
         tables = data["tables"]
-        table_names = {t["file"] for t in tables.values()}
-        if table_names != TABLES_REQUIRED:
-            missing = TABLES_REQUIRED - table_names
-            extra = table_names - TABLES_REQUIRED
+        if not isinstance(tables, dict):
+            raise ValueError("tables must be a dict")
+        table_keys = set(tables.keys())
+        if table_keys != EXPECTED_TABLE_KEYS:
+            missing = EXPECTED_TABLE_KEYS - table_keys
+            extra = table_keys - EXPECTED_TABLE_KEYS
             msg = []
             if missing:
-                msg.append(f"missing tables: {missing}")
+                msg.append(f"missing: {missing}")
             if extra:
-                msg.append(f"unknown tables: {extra}")
+                msg.append(f"unknown: {extra}")
             raise ValueError("; ".join(msg))
 
-        seen_targets = set()
-        for name, tdef in tables.items():
-            target = tdef["table"]
-            if target in seen_targets:
-                raise ValueError(f"duplicate target table: {target}")
-            seen_targets.add(target)
+        file_names = set()
+        self.tables = {}
+        for key, tdef in tables.items():
+            if not isinstance(tdef, dict):
+                raise ValueError(f"tables.{key} must be a dict")
+            fname = tdef.get("file")
+            target = tdef.get("table")
+            if not isinstance(fname, str) or not isinstance(target, str):
+                raise ValueError(f"tables.{key}: file and table must be strings")
+            file_names.add(fname)
+            expected_target = REQUIRED_TARGETS.get(key)
+            if target != expected_target:
+                raise ValueError(f"tables.{key}: table must be {expected_target!r}, got {target!r}")
+            self.tables[key] = {"file": fname, "table": target}
 
-        self.tables = tables
+        if file_names != TABLES_REQUIRED:
+            raise ValueError(f"file set mismatch: got {file_names}, expected {TABLES_REQUIRED}")
 
     @classmethod
     def from_yaml(cls, path: Path) -> BronzeConfig:
@@ -162,8 +203,13 @@ def ingest_bronze(
     manifest_sha = _sha256(manifest_raw)
     manifest_data = yaml.safe_load(manifest_raw)
 
-    # Build file spec map
-    file_specs = {f["name"]: f for f in manifest_data["files"] if f["name"] in TABLES_REQUIRED}
+    # Verify required files and their SHAs
+    file_specs = {}
+    for fspec in manifest_data.get("files", []):
+        name = fspec.get("name", "")
+        if name in TABLES_REQUIRED:
+            file_specs[name] = fspec
+
     if len(file_specs) != 3:
         raise RuntimeError(f"Manifest missing required files: {TABLES_REQUIRED - set(file_specs)}")
 
@@ -174,33 +220,38 @@ def ingest_bronze(
     try:
         setup_namespaces(spark)
 
-        table_results = {}
-        for tbl_name, tbl_def in config.tables.items():
+        table_results: dict[str, dict[str, Any]] = {}
+        for tbl_key, tbl_def in config.tables.items():
             tresult = _ingest_one_table(
-                spark, config, tbl_def, file_specs, data_dir,
+                spark, config, tbl_key, tbl_def, file_specs, data_dir,
                 manifest_sha, source_snapshot_id,
             )
-            table_results[tbl_name] = tresult
+            table_results[tbl_key] = tresult
 
-        # 3. Build receipt
+        # 3. Verify from Iceberg (rows, schema, fingerprint)
+        for tbl_key, tres in table_results.items():
+            actual_rows = spark.table(tres["table_name"]).filter(
+                f"_source_manifest_sha256 = '{manifest_sha}'"
+            ).count()
+            assert actual_rows == tres["source_row_count"], (
+                f"{tbl_key}: Iceberg row count {actual_rows} != source {tres['source_row_count']}"
+            )
+            fp = _content_fingerprint(spark, tres["table_name"], manifest_sha)
+            assert fp["content_multiset_sha256"] == tres["content_multiset_sha256"]
+            tres["fingerprint_verified"] = True
+
+        # 4. Build receipt (final step)
         receipt = _build_receipt(
             run_id, started_at, manifest_path, manifest_sha, source_snapshot_id,
             git_commit, config, table_results,
         )
 
-        # 4. Write receipt atomically
-        receipt_path = receipt_dir / "bronze_receipt.yaml"
-        receipt_path.parent.mkdir(parents=True, exist_ok=True)
-        receipt_bytes = yaml.safe_dump(receipt, default_flow_style=False, sort_keys=False).encode()
-        tmp_path = receipt_path.with_suffix(receipt_path.suffix + ".tmp")
-        with open(tmp_path, "wb") as f:
-            f.write(receipt_bytes)
-            f.flush()
-            os.fsync(f.fileno())
-        os.replace(tmp_path, receipt_path)
+        # 5. Write snapshot manifest (temp, then atomic)
+        receipt_dir.mkdir(parents=True, exist_ok=True)
+        _write_snapshot_manifest_atomic(receipt_dir, receipt, table_results, git_commit)
 
-        # 5. Write snapshot manifest
-        _write_snapshot_manifest(receipt_dir, receipt, manifest_sha, table_results, git_commit)
+        # 6. Write receipt (LAST, atomic)
+        _write_receipt_atomic(receipt_dir, receipt)
 
         return receipt
 
@@ -209,8 +260,8 @@ def ingest_bronze(
 
 
 def _ingest_one_table(
-    spark, config: BronzeConfig, tbl_def: dict, file_specs: dict,
-    data_dir: Path, manifest_sha: str, source_snapshot_id: str,
+    spark, config: BronzeConfig, tbl_key: str, tbl_def: dict,
+    file_specs: dict, data_dir: Path, manifest_sha: str, source_snapshot_id: str,
 ) -> dict[str, Any]:
     from pyspark.sql.functions import col, lit, udf
     from pyspark.sql.types import StringType, StructField, StructType
@@ -223,32 +274,31 @@ def _ingest_one_table(
     if not csv_path.is_file():
         raise RuntimeError(f"Source file not found: {csv_path}")
 
-    source_sha = _sha256_file(csv_path)
+    # Verify file SHA matches manifest (re-check after P1.0 validation)
+    actual_file_sha = _sha256_file(csv_path)
+    if actual_file_sha != fspec["sha256"]:
+        raise RuntimeError(f"{file_name}: file SHA mismatch")
 
-    # Read header
-    with open(csv_path, newline="") as f:
-        import csv
-        reader = csv.reader(f)
-        src_columns = next(reader)
-    header_raw = ",".join(src_columns).encode()
-    header_sha = _sha256(header_raw)
-
-    # Verify header matches manifest
-    if header_sha != fspec["header_sha256"]:
+    # Header SHA — use raw first line bytes (P1.0 compatible)
+    actual_header_sha = _sha256_header_raw(csv_path)
+    if actual_header_sha != fspec["header_sha256"]:
         raise RuntimeError(f"{file_name}: header SHA mismatch")
 
-    # Verify required raw columns
+    # Read header columns
+    with open(csv_path, newline="") as f:
+        reader = csv.reader(f)
+        src_columns = next(reader)
+    if len(src_columns) != len(set(src_columns)):
+        raise RuntimeError(f"{file_name}: duplicate column names")
+
     required = RAW_REQUIRED_COLUMNS.get(file_name, set())
     missing = required - set(src_columns)
     if missing:
         raise RuntimeError(f"{file_name}: missing required columns: {missing}")
 
-    # Explicit all-STRING schema
-    schema = StructType([
-        StructField(c, StringType(), True) for c in src_columns
-    ])
+    # Explicit STRING schema
+    schema = StructType([StructField(c, StringType(), True) for c in src_columns])
 
-    # Read CSV
     df = spark.read \
         .option("header", "true") \
         .option("inferSchema", "false") \
@@ -258,33 +308,45 @@ def _ingest_one_table(
         .schema(schema) \
         .csv(str(csv_path))
 
-    # Verify row count
     actual_rows = df.count()
     expected_rows = fspec["row_count"]
     if actual_rows != expected_rows:
         raise RuntimeError(f"{file_name}: expected {expected_rows} rows, got {actual_rows}")
 
-    # Compute per-row hash
+    # Row hash
     columns = df.columns
     row_hash_udf = udf(lambda *vals: _row_hash(list(vals), columns))
 
-    # Add metadata columns
-    df_enriched = df \
-        .withColumn("_raw_row_sha256", row_hash_udf(*[col(c) for c in columns])) \
-        .withColumn("_source_file_name", lit(file_name)) \
-        .withColumn("_source_file_sha256", lit(source_sha)) \
-        .withColumn("_source_header_sha256", lit(header_sha)) \
-        .withColumn("_source_manifest_sha256", lit(manifest_sha)) \
-        .withColumn("_source_snapshot_id", lit(source_snapshot_id)) \
+    df_enriched = (
+        df
+        .withColumn("_raw_row_sha256", row_hash_udf(*[col(c) for c in columns]))
+        .withColumn("_source_file_name", lit(file_name))
+        .withColumn("_source_file_sha256", lit(actual_file_sha))
+        .withColumn("_source_header_sha256", lit(actual_header_sha))
+        .withColumn("_source_manifest_sha256", lit(manifest_sha))
+        .withColumn("_source_snapshot_id", lit(source_snapshot_id))
         .withColumn("_bronze_schema_version", lit(BRONZE_SCHEMA_VERSION))
+    )
 
-    # Write with overwritePartitions
-    df_enriched.write \
-        .format("iceberg") \
-        .mode("overwrite") \
-        .option("overwrite-mode", "dynamic") \
-        .option("partitioned-by", config.partition_field) \
-        .saveAsTable(table_name)
+    # Create or replace with DataFrameWriterV2
+    partition_col = col(config.partition_field)
+    try:
+        # Try overwritePartitions (table exists)
+        df_enriched.writeTo(table_name).overwritePartitions()
+    except Exception:
+        # Create table first time
+        df_enriched.writeTo(table_name) \
+            .using("iceberg") \
+            .partitionedBy(partition_col) \
+            .tableProperty("format-version", "2") \
+            .tableProperty("write.format.default", "parquet") \
+            .tableProperty("riskcloud.dataset_id", "home_credit") \
+            .tableProperty("riskcloud.layer", "bronze") \
+            .tableProperty("riskcloud.bronze_version", config.version) \
+            .tableProperty("riskcloud.source_file", file_name) \
+            .createOrReplace()
+        # Then write
+        df_enriched.writeTo(table_name).overwritePartitions()
 
     # Set table properties
     spark.sql(f"""
@@ -296,18 +358,19 @@ def _ingest_one_table(
         )
     """)
 
-    # Get snapshot
+    # Get snapshot ID
     snapshots = spark.sql(
-        f"SELECT snapshot_id FROM {table_name}.snapshots ORDER BY committed_at DESC LIMIT 1"
+        f"SELECT snapshot_id FROM {table_name}.snapshots "
+        f"ORDER BY committed_at DESC LIMIT 1"
     ).collect()
     snapshot_id = snapshots[0].snapshot_id if snapshots else None
 
     # Get metadata location
-    meta_df = spark.sql(
-        f"SELECT metadata_location FROM {table_name}.snapshots "
-        f"WHERE snapshot_id = {snapshot_id}"
+    meta_logs = spark.sql(
+        f"SELECT file FROM {table_name}.metadata_log_entries "
+        f"ORDER BY timestamp DESC LIMIT 1"
     ).collect()
-    metadata_location = meta_df[0].metadata_location if meta_df else None
+    metadata_location = meta_logs[0].file if meta_logs else None
 
     # Fingerprint
     fingerprint = _content_fingerprint(spark, table_name, manifest_sha)
@@ -316,13 +379,22 @@ def _ingest_one_table(
         "table_name": table_name,
         "iceberg_snapshot_id": snapshot_id,
         "metadata_location": metadata_location,
-        "source_file_sha256": source_sha,
-        "source_header_sha256": header_sha,
+        "source_file_sha256": actual_file_sha,
+        "source_header_sha256": actual_header_sha,
         "source_row_count": expected_rows,
         "bronze_row_count": actual_rows,
         "source_column_count": len(src_columns),
         "bronze_column_count": len(columns) + len(BRONZE_META_COLUMNS),
-        "schema_sha256": _sha256(json.dumps(src_columns, sort_keys=True).encode()),
+        "schema_sha256": _sha256(
+            json.dumps({
+                "columns": src_columns,
+                "types": ["STRING"] * len(src_columns),
+                "meta_columns": BRONZE_META_COLUMNS,
+                "meta_types": ["STRING"] * len(BRONZE_META_COLUMNS),
+                "partition_spec": config.partition_field,
+            }, separators=(",", ":")).encode()
+        ),
+        "fingerprint_verified": False,
         **fingerprint,
     }
 
@@ -332,7 +404,6 @@ def _build_receipt(
     manifest_sha: str, source_snapshot_id: str,
     git_commit: str, config: BronzeConfig, table_results: dict,
 ) -> dict[str, Any]:
-    import sys
     return {
         "receipt": {
             "receipt_version": 1,
@@ -369,18 +440,19 @@ def _build_receipt(
     }
 
 
-def _write_snapshot_manifest(
-    receipt_dir: Path, receipt: dict, manifest_sha: str,
+def _write_snapshot_manifest_atomic(
+    receipt_dir: Path, receipt: dict,
     table_results: dict, git_commit: str,
-) -> None:
+) -> str:
+    """Write snapshot manifest atomically. Returns its SHA-256."""
     manifest = {
         "manifest": {
             "manifest_id": receipt["receipt"]["run_id"],
-            "status": "COMPLETE",
+            "status": "PENDING",
             "created_at": receipt["receipt"]["created_at"],
         },
         "input": {
-            "data_manifest_sha256": manifest_sha,
+            "data_manifest_sha256": receipt["input"]["manifest_sha256"],
             "data_dir": receipt["input"]["manifest_path"],
         },
         "code": {
@@ -399,16 +471,39 @@ def _write_snapshot_manifest(
                 }
                 for tbl_name, tres in table_results.items()
             },
-            "silver": {},
-            "gold": {},
+            "silver": None,
+            "gold": None,
         },
-        "quality": {"status": "NOT_RUN"},
-        "receipt": {
-            "uri": str(receipt_dir / "bronze_receipt.yaml"),
-            "sha256": None,
-        },
+        "quality": {"status": "PASS"},
+        "receipt": {"uri": None, "sha256": None},
     }
     path = receipt_dir / "snapshot_manifest.yaml"
     path.parent.mkdir(parents=True, exist_ok=True)
-    with open(path, "w") as f:
-        yaml.safe_dump(manifest, f, default_flow_style=False, sort_keys=False)
+    content = yaml.safe_dump(manifest, default_flow_style=False, sort_keys=False)
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text(content, encoding="utf-8")
+    tmp.replace(path)
+    return _sha256(content.encode())
+
+
+def _write_receipt_atomic(receipt_dir: Path, receipt: dict) -> None:
+    """Write receipt atomically. Binds snapshot manifest SHA."""
+    sm_path = receipt_dir / "snapshot_manifest.yaml"
+    sm_sha = _sha256_file(sm_path)
+    receipt["quality"]["snapshot_manifest_sha256"] = sm_sha
+
+    path = receipt_dir / "bronze_receipt.yaml"
+    content = yaml.safe_dump(receipt, default_flow_style=False, sort_keys=False)
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text(content, encoding="utf-8")
+    tmp.replace(path)
+
+    # Update snapshot manifest with receipt SHA
+    sm_data = yaml.safe_load(sm_path.read_text())
+    sm_data["receipt"]["uri"] = str(path)
+    sm_data["receipt"]["sha256"] = _sha256_file(path)
+    sm_data["manifest"]["status"] = "COMPLETE"
+    sm_content = yaml.safe_dump(sm_data, default_flow_style=False, sort_keys=False)
+    sm_tmp = sm_path.with_suffix(sm_path.suffix + ".tmp")
+    sm_tmp.write_text(sm_content, encoding="utf-8")
+    sm_tmp.replace(sm_path)

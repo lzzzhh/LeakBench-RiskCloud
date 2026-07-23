@@ -27,7 +27,7 @@ jobs:
           pip install pytest pyyaml
 
       - name: Run tests
-        run: python -m pytest tests/ -v --tb=short
+        run: python -m pytest tests/ -v --tb=short -m "not bronz_int"
 
       - name: Verify scientific freeze lock
         run: python -m riskcloud.freeze
@@ -66,4 +66,4 @@ jobs:
           distribution: temurin
           java-version: "17"
       - run: pip install "pyspark==3.5.3" "PyYAML>=6" pytest
-      - run: python -m pytest tests/platform/home_credit/test_bronze_iceberg_integration.py -v --tb=short
+      - run: python -m pytest tests/platform/home_credit/test_bronze_iceberg_integration.py -v --tb=short -m bronz_int

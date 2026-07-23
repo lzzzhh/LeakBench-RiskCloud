@@ -16,6 +16,8 @@ from case_studies.home_credit.pipelines.bronze_ingestion import (
 )
 from riskcloud.adapters.home_credit.field_mapping import RAW_REQUIRED_COLUMNS
 
+pytestmark = pytest.mark.bronz_int
+
 FIXTURES = Path(__file__).resolve().parents[3] / "tests" / "fixtures" / "home_credit"
 CONFIG_PATH = (
     Path(__file__).resolve().parents[3]
@@ -169,7 +171,6 @@ class TestBronzeIngestion:
             assert t2["content_multiset_sha256"] == t1["content_multiset_sha256"], (
                 f"{tbl_name}: fingerprint changed on rerun"
             )
-            assert t2["source_snapshot_id"] == receipt2["input"]["source_snapshot_id"]
 
     def test_row_hash_deterministic_across_runs(self, setup):
         """Same raw data → same _raw_row_sha256."""

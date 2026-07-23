@@ -21,8 +21,11 @@ dev = [
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-addopts = ["-q", "--strict-markers", "--tb=short"]
+addopts = ["-q", "--strict-markers", "--tb=short", "-m", "not bronz_int"]
 filterwarnings = ["error"]
+markers = [
+    "bronz_int: tests requiring Java + PySpark + Iceberg runtime",
+]
 
 [tool.ruff]
 line-length = 120

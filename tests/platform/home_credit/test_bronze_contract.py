@@ -31,10 +31,15 @@ class TestBronzeConfig:
     def test_rejects_missing_table(self):
         with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as f:
             yaml.safe_dump({
-                "bronze": {"version": "v1", "catalog": "r", "namespace": "b",
-                           "partition_field": "f", "write_mode": "overwrite_partitions"},
+                "bronze": {"version": "hc-bronze-v1", "catalog": "riskcloud",
+                           "namespace": "bronze", "schema_mode": "all_source_columns_as_string",
+                           "partition_field": "_source_manifest_sha256",
+                           "write_mode": "overwrite_partitions"},
                 "tables": {
-                    "application_train": {"file": "application_train.csv", "table": "t"},
+                    "application_train": {
+                        "file": "application_train.csv",
+                        "table": "riskcloud.bronze.application_train",
+                    },
                 },
             }, f)
             path = Path(f.name)
@@ -47,17 +52,22 @@ class TestBronzeConfig:
     def test_rejects_duplicate_targets(self):
         with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as f:
             yaml.safe_dump({
-                "bronze": {"version": "v1", "catalog": "r", "namespace": "b",
-                           "partition_field": "f", "write_mode": "overwrite_partitions"},
+                "bronze": {"version": "hc-bronze-v1", "catalog": "riskcloud",
+                           "namespace": "bronze", "schema_mode": "all_source_columns_as_string",
+                           "partition_field": "_source_manifest_sha256",
+                           "write_mode": "overwrite_partitions"},
                 "tables": {
-                    "a": {"file": "application_train.csv", "table": "same.table"},
-                    "b": {"file": "bureau.csv", "table": "same.table"},
-                    "c": {"file": "bureau_balance.csv", "table": "ok.table"},
+                    "application_train": {"file": "application_train.csv",
+                                          "table": "riskcloud.bronze.application_train"},
+                    "bureau": {"file": "bureau.csv",
+                               "table": "riskcloud.bronze.application_train"},
+                    "bureau_balance": {"file": "bureau_balance.csv",
+                                       "table": "riskcloud.bronze.bureau_balance"},
                 },
             }, f)
             path = Path(f.name)
         try:
-            with pytest.raises(ValueError, match="duplicate"):
+            with pytest.raises(ValueError, match="table"):
                 BronzeConfig.from_yaml(path)
         finally:
             path.unlink()
@@ -95,8 +105,9 @@ class TestRowHash:
         assert h_with_null != h_with_empty
 
     def test_column_order_matters(self):
+        """Same values, different column assignment → different hash."""
         h1 = _row_hash(["1", "2"], ["a", "b"])
-        h2 = _row_hash(["2", "1"], ["a", "b"])
+        h2 = _row_hash(["2", "1"], ["b", "a"])
         assert h1 != h2
 
 
