@@ -30,6 +30,12 @@ from riskcloud.adapters.home_credit.field_mapping import (
     RAW_REQUIRED_COLUMNS,
 )
 
+REQUIRED_FILES_BY_KEY = {
+    "application_train": APPLICATION_FILE,
+    "bureau": BUREAU_FILE,
+    "bureau_balance": BUREAU_BALANCE_FILE,
+}
+
 BRONZE_META_COLUMNS = [
     "_source_file_name",
     "_source_file_sha256",
@@ -151,6 +157,9 @@ class BronzeConfig:
                 raise ValueError(f"tables.{key} must be a dict")
             fname = tdef.get("file")
             target = tdef.get("table")
+            expected_file = REQUIRED_FILES_BY_KEY.get(key)
+            if fname != expected_file:
+                raise ValueError(f"tables.{key}.file must be {expected_file!r}, got {fname!r}")
             expected_target = REQUIRED_TARGETS.get(key)
             if target != expected_target:
                 raise ValueError(f"tables.{key}.table must be {expected_target!r}, got {target!r}")
@@ -481,16 +490,21 @@ def _write_snapshot_manifest(
     receipt_dir: Path, receipt: dict, table_results: dict,
     git_commit: str, data_dir: Path,
 ) -> None:
+    """Write snapshot manifest as COMPLETE (before receipt)."""
     manifest = {
         "manifest": {
             "manifest_id": receipt["receipt"]["run_id"],
-            "status": "PENDING", "created_at": receipt["receipt"]["created_at"],
+            "status": "COMPLETE",
+            "created_at": receipt["receipt"]["created_at"],
         },
         "input": {
             "data_manifest_sha256": receipt["input"]["manifest_sha256"],
             "data_dir": str(data_dir),
         },
-        "code": {"git_commit": git_commit, "adapter_version": "1.0.0", "boundary_version": "hc-boundary-v1"},
+        "code": {
+            "git_commit": git_commit, "adapter_version": "1.0.0",
+            "boundary_version": "hc-boundary-v1",
+        },
         "tables": {
             "bronze": {
                 tbl_name: {
@@ -516,20 +530,16 @@ def _write_snapshot_manifest(
         "quality": {"status": "NOT_RUN"},
         "receipt": {"uri": str(receipt_dir / "bronze_receipt.yaml"), "sha256": None},
     }
-    _atomic_write(receipt_dir / "snapshot_manifest.yaml",
-                  yaml.safe_dump(manifest, default_flow_style=False, sort_keys=False))
+    content = yaml.safe_dump(manifest, default_flow_style=False, sort_keys=False)
+    _atomic_write(receipt_dir / "snapshot_manifest.yaml", content)
 
 
 def _write_receipt(receipt_dir: Path, receipt: dict) -> None:
+    """Write receipt LAST. Binds snapshot manifest SHA. Does NOT modify manifest after."""
     sm_path = receipt_dir / "snapshot_manifest.yaml"
     sm_sha = _sha256_file(sm_path)
     receipt["quality"]["snapshot_manifest_sha256"] = sm_sha
 
     content = yaml.safe_dump(receipt, default_flow_style=False, sort_keys=False)
     _atomic_write(receipt_dir / "bronze_receipt.yaml", content)
-
-    # Update snapshot manifest status to COMPLETE
-    sm = yaml.safe_load(sm_path.read_text())
-    sm["manifest"]["status"] = "COMPLETE"
-    sm["receipt"]["sha256"] = _sha256_file(receipt_dir / "bronze_receipt.yaml")
-    _atomic_write(sm_path, yaml.safe_dump(sm, default_flow_style=False, sort_keys=False))
+    # Snapshot manifest is NOT modified after receipt is published
