@@ -24,9 +24,10 @@ testpaths = ["tests"]
 addopts = ["-q", "--strict-markers", "--tb=short"]
 filterwarnings = ["error"]
 markers = [
-    "bronze_integration: tests requiring Java + PySpark + Iceberg runtime",
-    "silver_integration: tests requiring Java + PySpark + Iceberg runtime",
-    "e2e: full phase 1 end-to-end tests requiring Java + PySpark + Iceberg",
+    "integration: tests requiring Java + PySpark + Iceberg runtime",
+    "bronze_integration: Bronze integration",
+    "silver_integration: Silver integration",
+    "e2e: Phase 1 end-to-end integration",
 ]
 
 [tool.ruff]

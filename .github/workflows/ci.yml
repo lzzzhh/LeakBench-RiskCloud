@@ -27,7 +27,7 @@ jobs:
           pip install pytest pyyaml
 
       - name: Run tests
-        run: python -m pytest tests/ -v --tb=short -m "not bronze_integration"
+        run: python -m pytest tests/ -v --tb=short -m "not integration"
 
       - name: Verify scientific freeze lock
         run: python -m riskcloud.freeze

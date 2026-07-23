@@ -13,7 +13,7 @@ from case_studies.home_credit.pipelines.silver_ingestion import SilverConfig, in
 from case_studies.home_credit.pipelines.spark_env import get_spark, setup_namespaces
 
 pytestmark = [
-    pytest.mark.silver_integration,
+    pytest.mark.integration, pytest.mark.silver_integration,
     pytest.mark.filterwarnings(r"ignore:.*socket\.socket.*:pytest.PytestUnraisableExceptionWarning"),
     pytest.mark.filterwarnings(r"ignore:.*socket\.socket.*:ResourceWarning"),
 ]

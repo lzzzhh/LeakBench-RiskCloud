@@ -7,10 +7,13 @@ from pathlib import Path
 import yaml
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
-TEMPLATE = REPO_ROOT / "case_studies" / "home_credit" / "manifests" / "snapshot_manifest.template.yaml"
+TEMPLATE = (
+    REPO_ROOT / "case_studies" / "home_credit" / "manifests" / "snapshot_manifest.template.yaml"
+)
 
 
 class TestSnapshotTemplate:
+
     def test_template_exists(self):
         assert TEMPLATE.is_file()
 
@@ -25,7 +28,9 @@ class TestSnapshotTemplate:
         for layer in ("bronze", "silver", "gold"):
             tables = data["tables"][layer]
             for table_name, table_def in tables.items():
-                assert "iceberg_snapshot_id" in table_def, f"Missing iceberg_snapshot_id in {layer}.{table_name}"
+                assert "iceberg_snapshot_id" in table_def, (
+                    f"Missing iceberg_snapshot_id in {layer}.{table_name}"
+                )
 
     def test_receipt_has_uri_and_sha(self):
         with open(TEMPLATE) as f:

@@ -25,7 +25,6 @@ NOW = datetime(2024, 7, 1, 12, 0, 0, tzinfo=UTC)
 # Valid minimal adapter
 # -----------------------------------------------------------------
 
-
 class _ValidAdapter(Adapter):
     @property
     def dataset_id(self) -> str:
@@ -40,18 +39,16 @@ class _ValidAdapter(Adapter):
         return "1.0.0"
 
     def define_prediction_boundary(self, raw_record):
-        return PredictionPoint.parse(
-            {
-                "prediction_id": raw_record["id"],
-                "entity_id": raw_record["id"],
-                "prediction_time": NOW.isoformat(),
-                "split": "train",
-                "snapshot_id": "snap-001",
-                "boundary_version": "v1.0",
-                "label": 1.0,
-                "label_time": (NOW + timedelta(days=365)).isoformat(),
-            }
-        )
+        return PredictionPoint.parse({
+            "prediction_id": raw_record["id"],
+            "entity_id": raw_record["id"],
+            "prediction_time": NOW.isoformat(),
+            "split": "train",
+            "snapshot_id": "snap-001",
+            "boundary_version": "v1.0",
+            "label": 1.0,
+            "label_time": (NOW + timedelta(days=365)).isoformat(),
+        })
 
     def prediction_time_column(self) -> str:
         return "application_date"
@@ -64,47 +61,40 @@ class _ValidAdapter(Adapter):
 
     def generate_events(self, raw_record, source_system=""):
         eid = compute_event_id(
-            self.dataset_id,
-            EntityType.LOAN_APPLICATION,
-            raw_record["id"],
-            EventType.LOAN_APPLICATION,
-            NOW,
-            source_record_id=f"src:{raw_record['id']}",
+            self.dataset_id, EntityType.LOAN_APPLICATION,
+            raw_record["id"], EventType.LOAN_APPLICATION,
+            NOW, source_record_id=f"src:{raw_record['id']}",
         )
-        yield Event.parse(
-            {
-                "dataset_id": self.dataset_id,
-                "event_id": eid,
-                "entity_type": "loan_application",
-                "entity_id": raw_record["id"],
-                "customer_id": f"customer:{raw_record['id']}",
-                "event_type": "loan_application",
-                "event_time": NOW.isoformat(),
-                "available_at": (NOW + timedelta(seconds=1)).isoformat(),
-                "ingested_at": (NOW + timedelta(seconds=2)).isoformat(),
-                "source_system": source_system or self.dataset_id,
-                "source_record_id": f"src:{raw_record['id']}",
-            }
-        )
+        yield Event.parse({
+            "dataset_id": self.dataset_id,
+            "event_id": eid,
+            "entity_type": "loan_application",
+            "entity_id": raw_record["id"],
+            "customer_id": f"customer:{raw_record['id']}",
+            "event_type": "loan_application",
+            "event_time": NOW.isoformat(),
+            "available_at": (NOW + timedelta(seconds=1)).isoformat(),
+            "ingested_at": (NOW + timedelta(seconds=2)).isoformat(),
+            "source_system": source_system or self.dataset_id,
+            "source_record_id": f"src:{raw_record['id']}",
+        })
 
     def build_feature_catalog(self):
         return [
-            FeatureCatalogEntry.parse(
-                {
-                    "feature_id": "f1",
-                    "feature_name": "Feature One",
-                    "entity_type": "application",
-                    "feature_group": "test",
-                    "source_system": "test",
-                    "event_time_rule": "application_date <= prediction_time",
-                    "availability_rule": "application_date <= prediction_time",
-                    "stage": "application",
-                    "owner": "test_team",
-                    "leakage_risk": "none",
-                    "semantic_group_id": "test_group",
-                    "lineage_expression": "SELECT * FROM x",
-                }
-            ),
+            FeatureCatalogEntry.parse({
+                "feature_id": "f1",
+                "feature_name": "Feature One",
+                "entity_type": "application",
+                "feature_group": "test",
+                "source_system": "test",
+                "event_time_rule": "application_date <= prediction_time",
+                "availability_rule": "application_date <= prediction_time",
+                "stage": "application",
+                "owner": "test_team",
+                "leakage_risk": "none",
+                "semantic_group_id": "test_group",
+                "lineage_expression": "SELECT * FROM x",
+            }),
         ]
 
     def semantic_group_mapping(self):
@@ -115,8 +105,8 @@ class _ValidAdapter(Adapter):
 # Tests
 # -----------------------------------------------------------------
 
-
 class TestAdapterInterface:
+
     @pytest.fixture
     def adapter(self):
         return _ValidAdapter()
@@ -214,7 +204,6 @@ class TestAdapterInterface:
         class BadLabel(_ValidAdapter):
             def label_column(self):
                 return "target"
-
             def label_time_column(self):
                 return None  # should error: label without label_time
 
@@ -234,18 +223,16 @@ class TestAdapterInterface:
         class DraftCatalog(_ValidAdapter):
             def build_feature_catalog(self):
                 return [
-                    FeatureCatalogEntry.parse(
-                        {
-                            "feature_id": "f1",
-                            "feature_name": "F1",
-                            "entity_type": "app",
-                            "feature_group": "g",
-                            "source_system": "s",
-                            "event_time_rule": "x",
-                            "availability_rule": "y",
-                            "stage": "application",
-                        }
-                    ),
+                    FeatureCatalogEntry.parse({
+                        "feature_id": "f1",
+                        "feature_name": "F1",
+                        "entity_type": "app",
+                        "feature_group": "g",
+                        "source_system": "s",
+                        "event_time_rule": "x",
+                        "availability_rule": "y",
+                        "stage": "application",
+                    }),
                 ]
 
         errors = DraftCatalog().validate_adapter()
@@ -383,13 +370,12 @@ class TestAdapterInterface:
 # Import isolation
 # -----------------------------------------------------------------
 
-
 class TestImportIsolation:
+
     def test_contracts_dont_import_heavy_deps(self):
         """Contracts must not import pandas/numpy/sklearn/torch/tensorflow, verified via subprocess."""
         import subprocess
         import sys
-
         code = """
 import sys
 before = set(sys.modules.keys())
@@ -408,9 +394,7 @@ print("CLEAN")
 """
         result = subprocess.run(
             [sys.executable, "-c", code],
-            capture_output=True,
-            text=True,
-            timeout=10,
+            capture_output=True, text=True, timeout=10,
             cwd=str(REPO_ROOT),
         )
         assert result.returncode == 0, f"Import isolation failed: {result.stderr}"
@@ -420,7 +404,6 @@ print("CLEAN")
         """Adapter base must not import heavy frameworks, verified via subprocess."""
         import subprocess
         import sys
-
         code = """
 import sys
 before = set(sys.modules.keys())
@@ -436,9 +419,7 @@ print("CLEAN")
 """
         result = subprocess.run(
             [sys.executable, "-c", code],
-            capture_output=True,
-            text=True,
-            timeout=10,
+            capture_output=True, text=True, timeout=10,
             cwd=str(REPO_ROOT),
         )
         assert result.returncode == 0, f"Adapter isolation failed: {result.stderr}"

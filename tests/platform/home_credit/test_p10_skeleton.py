@@ -8,6 +8,7 @@ REPO_ROOT = Path(__file__).resolve().parents[3]
 
 
 class TestDirectoryContract:
+
     def test_adapter_package_is_tracked(self):
         """Adapter __init__.py must be a tracked file (not just empty directory)."""
         path = REPO_ROOT / "riskcloud" / "adapters" / "home_credit" / "__init__.py"
@@ -35,14 +36,13 @@ class TestDirectoryContract:
 
 
 class TestSparkEnvImport:
+
     def test_module_imports(self):
         from case_studies.home_credit.pipelines import spark_env
-
         assert spark_env.ICEBERG_VERSION == "1.6.1"
 
     def test_version_matrix_pinned(self):
         from case_studies.home_credit.pipelines import spark_env
-
         assert spark_env.ICEBERG_VERSION
         assert spark_env.SCALA_BINARY
         assert spark_env.SPARK_MAJOR
@@ -50,11 +50,11 @@ class TestSparkEnvImport:
 
     def test_has_cli_main(self):
         from case_studies.home_credit.pipelines import spark_env
-
         assert callable(spark_env.main)
 
 
 class TestGitignore:
+
     def test_warehouse_is_gitignored(self):
         gi = REPO_ROOT / ".gitignore"
         content = gi.read_text()

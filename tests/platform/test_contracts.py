@@ -112,8 +112,8 @@ def _valid_doc_dict(**overrides) -> dict:
 # Event Contract
 # =================================================================
 
-
 class TestEventContract:
+
     def test_parse_valid(self):
         evt = Event.parse(_valid_event_dict())
         assert evt.dataset_id == "test_ds"
@@ -131,37 +131,36 @@ class TestEventContract:
 
     def test_reject_naive_datetime(self):
         with pytest.raises(ContractValidationError):
-            Event.parse(
-                _valid_event_dict(event_time="2024-07-01T12:00:00", event_id=_canonical_event_id(event_time_utc=NOW))
-            )
+            Event.parse(_valid_event_dict(event_time="2024-07-01T12:00:00",
+                                          event_id=_canonical_event_id(event_time_utc=NOW)))
 
     def test_reject_empty_dataset_id(self):
         with pytest.raises(ContractValidationError):
-            Event.parse(_valid_event_dict(dataset_id="", event_id=_canonical_event_id(dataset_id="")))
+            Event.parse(_valid_event_dict(dataset_id="",
+                                          event_id=_canonical_event_id(dataset_id="")))
 
     def test_reject_missing_source_record_and_sha(self):
         with pytest.raises(ContractValidationError) as exc:
-            Event.parse(
-                {
-                    "dataset_id": "test_ds",
-                    "event_id": "any-id",
-                    "entity_type": "loan_application",
-                    "entity_id": "SK_ID_CURR:100001",
-                    "customer_id": "customer:abc",
-                    "event_type": "loan_application",
-                    "event_time": NOW.isoformat(),
-                    "available_at": (NOW + timedelta(seconds=10)).isoformat(),
-                    "ingested_at": (NOW + timedelta(seconds=20)).isoformat(),
-                    "source_system": "test_adapter",
-                    "source_record_id": "",
-                    "source_record_revision": "",
-                }
-            )
+            Event.parse({
+                "dataset_id": "test_ds",
+                "event_id": "any-id",
+                "entity_type": "loan_application",
+                "entity_id": "SK_ID_CURR:100001",
+                "customer_id": "customer:abc",
+                "event_type": "loan_application",
+                "event_time": NOW.isoformat(),
+                "available_at": (NOW + timedelta(seconds=10)).isoformat(),
+                "ingested_at": (NOW + timedelta(seconds=20)).isoformat(),
+                "source_system": "test_adapter",
+                "source_record_id": "",
+                "source_record_revision": "",
+            })
         assert any("source_record_id" in e.field_path for e in exc.value.errors)
 
     def test_reject_wrong_type(self):
         with pytest.raises(ContractValidationError):
-            Event.parse(_valid_event_dict(dataset_id=None, event_id=_canonical_event_id(dataset_id="")))
+            Event.parse(_valid_event_dict(dataset_id=None,
+                                          event_id=_canonical_event_id(dataset_id="")))
 
     def test_reject_invalid_enum(self):
         with pytest.raises(ContractValidationError):
@@ -171,13 +170,9 @@ class TestEventContract:
         t1 = datetime(2024, 1, 1, 10, 0, 0, tzinfo=timezone(timedelta(hours=10)))
         eid = compute_event_id("ds", EntityType.LOAN_APPLICATION, "SK_1", EventType.LOAN_APPLICATION, t1, "r1")
         d = _valid_event_dict(
-            dataset_id="ds",
-            entity_id="SK_1",
-            event_type="loan_application",
-            event_time=t1.isoformat(),
-            event_id=eid,
-            source_record_id="r1",
-            source_record_revision="",
+            dataset_id="ds", entity_id="SK_1", event_type="loan_application",
+            event_time=t1.isoformat(), event_id=eid,
+            source_record_id="r1", source_record_revision="",
         )
         evt = Event.parse(d)
         assert evt.event_id == eid
@@ -204,8 +199,8 @@ class TestEventContract:
 # PredictionPoint Contract
 # =================================================================
 
-
 class TestPredictionPointContract:
+
     def test_parse_valid(self):
         pp = PredictionPoint.parse(_valid_pred_point_dict())
         assert pp.prediction_id == "pp-001"
@@ -252,8 +247,8 @@ class TestPredictionPointContract:
 # FeatureCatalog Contract
 # =================================================================
 
-
 class TestFeatureCatalogEntryContract:
+
     def test_parse_valid(self):
         entry = FeatureCatalogEntry.parse(_valid_feature_dict())
         assert entry.is_publishable()
@@ -268,14 +263,9 @@ class TestFeatureCatalogEntryContract:
             FeatureCatalogEntry.parse(_valid_feature_dict(feature_id=""))
 
     def test_draft_not_publishable(self):
-        entry = FeatureCatalogEntry.parse(
-            _valid_feature_dict(
-                owner="",
-                leakage_risk="unknown",
-                lineage_expression=None,
-                semantic_group_id=None,
-            )
-        )
+        entry = FeatureCatalogEntry.parse(_valid_feature_dict(
+            owner="", leakage_risk="unknown", lineage_expression=None, semantic_group_id=None,
+        ))
         assert not entry.is_publishable()
 
     def test_publishable_rejects_unknown_risk(self):
@@ -312,8 +302,8 @@ class TestFeatureCatalogEntryContract:
 # DocumentParseResult Contract
 # =================================================================
 
-
 class TestDocumentParseResultContract:
+
     def test_parse_valid(self):
         doc = DocumentParseResult.parse(_valid_doc_dict())
         assert doc.document_id == "doc-001"
@@ -343,45 +333,34 @@ class TestDocumentParseResultContract:
         assert not doc.is_credit_model_eligible()
 
     def test_verified_without_evidence_not_eligible(self):
-        doc = DocumentParseResult.parse(
-            _valid_doc_dict(
-                entity_id="SK_001",
-                linkage_status="verified",
-            )
-        )
+        doc = DocumentParseResult.parse(_valid_doc_dict(
+            entity_id="SK_001", linkage_status="verified",
+        ))
         assert not doc.is_credit_model_eligible()
 
     def test_verified_with_full_evidence_is_eligible(self):
-        doc = DocumentParseResult.parse(
-            _valid_doc_dict(
-                entity_id="SK_001",
-                linkage_status="verified",
-                linkage_source="manual_review",
-                linkage_version="v1",
-                linkage_evidence_uri="s3://audit/link-001.json",
-                linked_at=NOW.isoformat(),
-            )
-        )
+        doc = DocumentParseResult.parse(_valid_doc_dict(
+            entity_id="SK_001",
+            linkage_status="verified",
+            linkage_source="manual_review",
+            linkage_version="v1",
+            linkage_evidence_uri="s3://audit/link-001.json",
+            linked_at=NOW.isoformat(),
+        ))
         assert doc.is_credit_model_eligible()
 
     def test_synthetic_without_allow_not_eligible(self):
-        doc = DocumentParseResult.parse(
-            _valid_doc_dict(
-                entity_id="SK_001",
-                linkage_status="synthetic",
-            )
-        )
+        doc = DocumentParseResult.parse(_valid_doc_dict(
+            entity_id="SK_001", linkage_status="synthetic",
+        ))
         assert not doc.is_credit_model_eligible()
         assert doc.is_credit_model_eligible(allow_synthetic=True)
 
     def test_verified_without_entity_raises(self):
         with pytest.raises(ContractValidationError):
-            DocumentParseResult.parse(
-                _valid_doc_dict(
-                    entity_id="",
-                    linkage_status="verified",
-                )
-            )
+            DocumentParseResult.parse(_valid_doc_dict(
+                entity_id="", linkage_status="verified",
+            ))
 
     # -- deep immutability: nested metadata --
 
@@ -412,24 +391,19 @@ class TestDocumentParseResultContract:
 # SHA-256 hex validation
 # =================================================================
 
-
 class TestSha256Validation:
+
     def test_event_rejects_non_hex_sha(self):
         with pytest.raises(ContractValidationError):
-            Event.parse(
-                _valid_event_dict(
-                    source_record_id="",
+            Event.parse(_valid_event_dict(
+                source_record_id="",
+                payload_sha256="z" * 64,
+                event_id=compute_event_id(
+                    "test_ds", EntityType.LOAN_APPLICATION, "SK_ID_CURR:100001",
+                    EventType.LOAN_APPLICATION, NOW,
                     payload_sha256="z" * 64,
-                    event_id=compute_event_id(
-                        "test_ds",
-                        EntityType.LOAN_APPLICATION,
-                        "SK_ID_CURR:100001",
-                        EventType.LOAN_APPLICATION,
-                        NOW,
-                        payload_sha256="z" * 64,
-                    ),
-                )
-            )
+                ),
+            ))
 
     def test_document_rejects_non_hex_sha(self):
         with pytest.raises(ContractValidationError):
@@ -437,20 +411,15 @@ class TestSha256Validation:
 
     def test_event_rejects_sha_with_trailing_newline(self):
         with pytest.raises(ContractValidationError):
-            Event.parse(
-                _valid_event_dict(
-                    source_record_id="",
+            Event.parse(_valid_event_dict(
+                source_record_id="",
+                payload_sha256="a" * 64 + "\n",
+                event_id=compute_event_id(
+                    "test_ds", EntityType.LOAN_APPLICATION, "SK_ID_CURR:100001",
+                    EventType.LOAN_APPLICATION, NOW,
                     payload_sha256="a" * 64 + "\n",
-                    event_id=compute_event_id(
-                        "test_ds",
-                        EntityType.LOAN_APPLICATION,
-                        "SK_ID_CURR:100001",
-                        EventType.LOAN_APPLICATION,
-                        NOW,
-                        payload_sha256="a" * 64 + "\n",
-                    ),
-                )
-            )
+                ),
+            ))
 
     def test_document_rejects_sha_with_trailing_newline(self):
         with pytest.raises(ContractValidationError):
@@ -460,20 +429,15 @@ class TestSha256Validation:
         sha_upper = "A" * 64
         normalized = sha_upper.lower()
         eid = compute_event_id(
-            "test_ds",
-            EntityType.LOAN_APPLICATION,
-            "SK_ID_CURR:100001",
-            EventType.LOAN_APPLICATION,
-            NOW,
+            "test_ds", EntityType.LOAN_APPLICATION, "SK_ID_CURR:100001",
+            EventType.LOAN_APPLICATION, NOW,
             payload_sha256=sha_upper,
         )
-        evt = Event.parse(
-            _valid_event_dict(
-                source_record_id="",
-                payload_sha256=sha_upper,
-                event_id=eid,
-            )
-        )
+        evt = Event.parse(_valid_event_dict(
+            source_record_id="",
+            payload_sha256=sha_upper,
+            event_id=eid,
+        ))
         assert evt.payload_sha256 == normalized
 
 
@@ -481,45 +445,34 @@ class TestSha256Validation:
 # Payload-only event identity
 # =================================================================
 
-
 class TestPayloadOnlyIdentity:
+
     def test_payload_only_event_is_valid(self):
         sha = "a" * 64
         eid = compute_event_id(
-            "test_ds",
-            EntityType.LOAN_APPLICATION,
-            "SK_ID_CURR:100001",
-            EventType.LOAN_APPLICATION,
-            NOW,
+            "test_ds", EntityType.LOAN_APPLICATION, "SK_ID_CURR:100001",
+            EventType.LOAN_APPLICATION, NOW,
             payload_sha256=sha,
         )
-        evt = Event.parse(
-            _valid_event_dict(
-                source_record_id="",
-                source_record_revision="",
-                payload_sha256=sha,
-                event_id=eid,
-            )
-        )
+        evt = Event.parse(_valid_event_dict(
+            source_record_id="",
+            source_record_revision="",
+            payload_sha256=sha,
+            event_id=eid,
+        ))
         assert evt.payload_sha256 == sha
 
     def test_different_payload_sha_produces_different_event_id(self):
         sha1 = "a" * 64
         sha2 = "b" * 64
         eid1 = compute_event_id(
-            "test_ds",
-            EntityType.LOAN_APPLICATION,
-            "SK_ID_CURR:100001",
-            EventType.LOAN_APPLICATION,
-            NOW,
+            "test_ds", EntityType.LOAN_APPLICATION, "SK_ID_CURR:100001",
+            EventType.LOAN_APPLICATION, NOW,
             payload_sha256=sha1,
         )
         eid2 = compute_event_id(
-            "test_ds",
-            EntityType.LOAN_APPLICATION,
-            "SK_ID_CURR:100001",
-            EventType.LOAN_APPLICATION,
-            NOW,
+            "test_ds", EntityType.LOAN_APPLICATION, "SK_ID_CURR:100001",
+            EventType.LOAN_APPLICATION, NOW,
             payload_sha256=sha2,
         )
         assert eid1 != eid2
@@ -527,19 +480,13 @@ class TestPayloadOnlyIdentity:
     def test_whitespace_source_id_uses_payload_identity(self):
         sha = "a" * 64
         eid_payload = compute_event_id(
-            "test_ds",
-            EntityType.LOAN_APPLICATION,
-            "SK_ID_CURR:100001",
-            EventType.LOAN_APPLICATION,
-            NOW,
+            "test_ds", EntityType.LOAN_APPLICATION, "SK_ID_CURR:100001",
+            EventType.LOAN_APPLICATION, NOW,
             payload_sha256=sha,
         )
         eid_whitespace = compute_event_id(
-            "test_ds",
-            EntityType.LOAN_APPLICATION,
-            "SK_ID_CURR:100001",
-            EventType.LOAN_APPLICATION,
-            NOW,
+            "test_ds", EntityType.LOAN_APPLICATION, "SK_ID_CURR:100001",
+            EventType.LOAN_APPLICATION, NOW,
             source_record_id="   ",
             payload_sha256=sha,
         )
@@ -550,20 +497,14 @@ class TestPayloadOnlyIdentity:
         sha1 = "a" * 64
         sha2 = "b" * 64
         eid1 = compute_event_id(
-            "test_ds",
-            EntityType.LOAN_APPLICATION,
-            "SK_ID_CURR:100001",
-            EventType.LOAN_APPLICATION,
-            NOW,
+            "test_ds", EntityType.LOAN_APPLICATION, "SK_ID_CURR:100001",
+            EventType.LOAN_APPLICATION, NOW,
             source_record_id="   ",
             payload_sha256=sha1,
         )
         eid2 = compute_event_id(
-            "test_ds",
-            EntityType.LOAN_APPLICATION,
-            "SK_ID_CURR:100001",
-            EventType.LOAN_APPLICATION,
-            NOW,
+            "test_ds", EntityType.LOAN_APPLICATION, "SK_ID_CURR:100001",
+            EventType.LOAN_APPLICATION, NOW,
             source_record_id="   ",
             payload_sha256=sha2,
         )
@@ -574,20 +515,14 @@ class TestPayloadOnlyIdentity:
         # vs source_record_id="A" with revision="B|C"
         # should produce different IDs (not collide via delimiter)
         eid1 = compute_event_id(
-            "test_ds",
-            EntityType.LOAN_APPLICATION,
-            "SK_ID_CURR:100001",
-            EventType.LOAN_APPLICATION,
-            NOW,
+            "test_ds", EntityType.LOAN_APPLICATION, "SK_ID_CURR:100001",
+            EventType.LOAN_APPLICATION, NOW,
             source_record_id="A|B",
             source_record_revision="C",
         )
         eid2 = compute_event_id(
-            "test_ds",
-            EntityType.LOAN_APPLICATION,
-            "SK_ID_CURR:100001",
-            EventType.LOAN_APPLICATION,
-            NOW,
+            "test_ds", EntityType.LOAN_APPLICATION, "SK_ID_CURR:100001",
+            EventType.LOAN_APPLICATION, NOW,
             source_record_id="A",
             source_record_revision="B|C",
         )
@@ -598,24 +533,19 @@ class TestPayloadOnlyIdentity:
 # Regression: event_time <= available_at
 # =================================================================
 
-
 class TestEventTimeOrdering:
+
     def test_event_time_must_not_exceed_available_at(self):
         with pytest.raises(ContractValidationError) as exc:
-            Event.parse(
-                _valid_event_dict(
-                    event_time=(NOW + timedelta(hours=1)).isoformat(),
-                    available_at=NOW.isoformat(),
-                    event_id=compute_event_id(
-                        "test_ds",
-                        EntityType.LOAN_APPLICATION,
-                        "SK_ID_CURR:100001",
-                        EventType.LOAN_APPLICATION,
-                        NOW + timedelta(hours=1),
-                        source_record_id="src-rec-1",
-                    ),
-                )
-            )
+            Event.parse(_valid_event_dict(
+                event_time=(NOW + timedelta(hours=1)).isoformat(),
+                available_at=NOW.isoformat(),
+                event_id=compute_event_id(
+                    "test_ds", EntityType.LOAN_APPLICATION, "SK_ID_CURR:100001",
+                    EventType.LOAN_APPLICATION, NOW + timedelta(hours=1),
+                    source_record_id="src-rec-1",
+                ),
+            ))
         assert any("event_time" in e.field_path for e in exc.value.errors)
 
 
@@ -623,8 +553,8 @@ class TestEventTimeOrdering:
 # Tags must be flat strings
 # =================================================================
 
-
 class TestTagsValidation:
+
     def test_tags_rejects_non_string_element(self):
         with pytest.raises(ContractValidationError) as exc:
             FeatureCatalogEntry.parse(_valid_feature_dict(tags=[123]))

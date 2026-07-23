@@ -18,9 +18,11 @@ from case_studies.home_credit.pipelines.bronze_ingestion import (
 
 
 class TestBronzeConfig:
+
     def test_valid_config(self):
         config = BronzeConfig.from_yaml(
-            Path(__file__).resolve().parents[3] / "case_studies" / "home_credit" / "configs" / "bronze_v1.yaml"
+            Path(__file__).resolve().parents[3]
+            / "case_studies" / "home_credit" / "configs" / "bronze_v1.yaml"
         )
         assert config.version == "hc-bronze-v1"
         assert config.write_mode == "overwrite_partitions"
@@ -28,25 +30,18 @@ class TestBronzeConfig:
 
     def test_rejects_missing_table(self):
         with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as f:
-            yaml.safe_dump(
-                {
-                    "bronze": {
-                        "version": "hc-bronze-v1",
-                        "catalog": "riskcloud",
-                        "namespace": "bronze",
-                        "schema_mode": "all_source_columns_as_string",
-                        "partition_field": "_source_manifest_sha256",
-                        "write_mode": "overwrite_partitions",
-                    },
-                    "tables": {
-                        "application_train": {
-                            "file": "application_train.csv",
-                            "table": "riskcloud.bronze.application_train",
-                        },
+            yaml.safe_dump({
+                "bronze": {"version": "hc-bronze-v1", "catalog": "riskcloud",
+                           "namespace": "bronze", "schema_mode": "all_source_columns_as_string",
+                           "partition_field": "_source_manifest_sha256",
+                           "write_mode": "overwrite_partitions"},
+                "tables": {
+                    "application_train": {
+                        "file": "application_train.csv",
+                        "table": "riskcloud.bronze.application_train",
                     },
                 },
-                f,
-            )
+            }, f)
             path = Path(f.name)
         try:
             with pytest.raises(ValueError, match="table keys"):
@@ -56,27 +51,20 @@ class TestBronzeConfig:
 
     def test_rejects_duplicate_targets(self):
         with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as f:
-            yaml.safe_dump(
-                {
-                    "bronze": {
-                        "version": "hc-bronze-v1",
-                        "catalog": "riskcloud",
-                        "namespace": "bronze",
-                        "schema_mode": "all_source_columns_as_string",
-                        "partition_field": "_source_manifest_sha256",
-                        "write_mode": "overwrite_partitions",
-                    },
-                    "tables": {
-                        "application_train": {
-                            "file": "application_train.csv",
-                            "table": "riskcloud.bronze.application_train",
-                        },
-                        "bureau": {"file": "bureau.csv", "table": "riskcloud.bronze.application_train"},
-                        "bureau_balance": {"file": "bureau_balance.csv", "table": "riskcloud.bronze.bureau_balance"},
-                    },
+            yaml.safe_dump({
+                "bronze": {"version": "hc-bronze-v1", "catalog": "riskcloud",
+                           "namespace": "bronze", "schema_mode": "all_source_columns_as_string",
+                           "partition_field": "_source_manifest_sha256",
+                           "write_mode": "overwrite_partitions"},
+                "tables": {
+                    "application_train": {"file": "application_train.csv",
+                                          "table": "riskcloud.bronze.application_train"},
+                    "bureau": {"file": "bureau.csv",
+                               "table": "riskcloud.bronze.application_train"},
+                    "bureau_balance": {"file": "bureau_balance.csv",
+                                       "table": "riskcloud.bronze.bureau_balance"},
                 },
-                f,
-            )
+            }, f)
             path = Path(f.name)
         try:
             with pytest.raises(ValueError, match="table"):
@@ -86,6 +74,7 @@ class TestBronzeConfig:
 
 
 class TestSourceSnapshotId:
+
     def test_deterministic(self):
         id1 = _compute_source_snapshot_id("a" * 64, "hc-bronze-v1")
         id2 = _compute_source_snapshot_id("a" * 64, "hc-bronze-v1")
@@ -103,6 +92,7 @@ class TestSourceSnapshotId:
 
 
 class TestRowHash:
+
     def test_deterministic(self):
         h1 = _row_hash(["100", "0", "C"], ["SK_ID_BUREAU", "MONTHS_BALANCE", "STATUS"])
         h2 = _row_hash(["100", "0", "C"], ["SK_ID_BUREAU", "MONTHS_BALANCE", "STATUS"])
@@ -122,6 +112,7 @@ class TestRowHash:
 
 
 class TestBronzeMetaColumns:
+
     def test_count(self):
         assert len(BRONZE_META_COLUMNS) == 7
 

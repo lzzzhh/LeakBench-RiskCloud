@@ -16,7 +16,11 @@ from case_studies.home_credit.scripts.validate_manifest import (
 
 FIXTURES = Path(__file__).resolve().parents[3] / "tests" / "fixtures" / "home_credit"
 PRODUCTION_MANIFEST = (
-    Path(__file__).resolve().parents[3] / "case_studies" / "home_credit" / "manifests" / "data_manifest.yaml"
+    Path(__file__).resolve().parents[3]
+    / "case_studies"
+    / "home_credit"
+    / "manifests"
+    / "data_manifest.yaml"
 )
 
 
@@ -34,14 +38,13 @@ def _write_manifest(manifest_path: Path, files: list[dict]) -> None:
 
 
 class TestManifestStructure:
+
     def test_valid_passes(self):
-        manifest = {
-            "files": [
-                {"name": "application_train.csv", "required": True},
-                {"name": "bureau.csv", "required": True},
-                {"name": "bureau_balance.csv", "required": True},
-            ]
-        }
+        manifest = {"files": [
+            {"name": "application_train.csv", "required": True},
+            {"name": "bureau.csv", "required": True},
+            {"name": "bureau_balance.csv", "required": True},
+        ]}
         assert _validate_manifest_structure(manifest) == []
 
     def test_rejects_empty_files_list(self):
@@ -59,78 +62,60 @@ class TestManifestStructure:
         assert any("name" in e.lower() for e in errors)
 
     def test_rejects_path_traversal(self):
-        errors = _validate_manifest_structure(
-            {
-                "files": [
-                    {"name": "../etc/passwd", "required": True},
-                ]
-            }
-        )
+        errors = _validate_manifest_structure({"files": [
+            {"name": "../etc/passwd", "required": True},
+        ]})
         assert any("path" in e.lower() for e in errors)
 
     def test_rejects_duplicate_names(self):
-        errors = _validate_manifest_structure(
-            {
-                "files": [
-                    {"name": "a.csv", "required": True},
-                    {"name": "a.csv", "required": True},
-                ]
-            }
-        )
+        errors = _validate_manifest_structure({"files": [
+            {"name": "a.csv", "required": True},
+            {"name": "a.csv", "required": True},
+        ]})
         assert any("duplicate" in e.lower() for e in errors)
 
     def test_rejects_required_not_bool(self):
-        errors = _validate_manifest_structure(
-            {
-                "files": [
-                    {"name": "application_train.csv", "required": "yes"},
-                ]
-            }
-        )
+        errors = _validate_manifest_structure({"files": [
+            {"name": "application_train.csv", "required": "yes"},
+        ]})
         assert any("required" in e.lower() and "bool" in e.lower() for e in errors)
 
     def test_required_file_cannot_be_optional(self):
         """Required files must have required=true."""
-        errors = _validate_manifest_structure(
-            {
-                "files": [
-                    {"name": "application_train.csv", "required": False},
-                    {"name": "bureau.csv", "required": False},
-                    {"name": "bureau_balance.csv", "required": False},
-                ]
-            }
-        )
+        errors = _validate_manifest_structure({"files": [
+            {"name": "application_train.csv", "required": False},
+            {"name": "bureau.csv", "required": False},
+            {"name": "bureau_balance.csv", "required": False},
+        ]})
         assert any("required" in e.lower() and "true" in e.lower() for e in errors)
 
     def test_required_files_must_all_exist(self):
-        errors = _validate_manifest_structure(
-            {
-                "files": [
-                    {"name": "application_train.csv", "required": True},
-                ]
-            }
-        )
+        errors = _validate_manifest_structure({"files": [
+            {"name": "application_train.csv", "required": True},
+        ]})
         assert any("bureau" in e.lower() for e in errors)
 
 
 class TestValidateManifestFailClosed:
+
     def test_required_file_missing(self):
         """All required files in manifest, but one file physically missing."""
         with tempfile.TemporaryDirectory() as tmp:
             data_dir = Path(tmp) / "data"
             data_dir.mkdir()
             # Create application_train and bureau, but NOT bureau_balance
-            (data_dir / "application_train.csv").write_text((FIXTURES / "application_train.csv").read_text())
-            (data_dir / "bureau.csv").write_text((FIXTURES / "bureau.csv").read_text())
-            manifest_path = Path(tmp) / "manifest.yaml"
-            _write_manifest(
-                manifest_path,
-                [
-                    {"name": "application_train.csv", "required": True},
-                    {"name": "bureau.csv", "required": True},
-                    {"name": "bureau_balance.csv", "required": True},
-                ],
+            (data_dir / "application_train.csv").write_text(
+                (FIXTURES / "application_train.csv").read_text()
             )
+            (data_dir / "bureau.csv").write_text(
+                (FIXTURES / "bureau.csv").read_text()
+            )
+            manifest_path = Path(tmp) / "manifest.yaml"
+            _write_manifest(manifest_path, [
+                {"name": "application_train.csv", "required": True},
+                {"name": "bureau.csv", "required": True},
+                {"name": "bureau_balance.csv", "required": True},
+            ])
             ok, errors = validate_manifest(data_dir, manifest_path)
             assert not ok
             error_text = "|".join(errors).lower()
@@ -144,14 +129,11 @@ class TestValidateManifestFailClosed:
             for f in ["application_train.csv", "bureau.csv", "bureau_balance.csv"]:
                 (data_dir / f).write_text((FIXTURES / f).read_text())
             manifest_path = Path(tmp) / "manifest.yaml"
-            _write_manifest(
-                manifest_path,
-                [
-                    {"name": "application_train.csv", "required": True},
-                    {"name": "bureau.csv", "required": True},
-                    {"name": "bureau_balance.csv", "required": True},
-                ],
-            )
+            _write_manifest(manifest_path, [
+                {"name": "application_train.csv", "required": True},
+                {"name": "bureau.csv", "required": True},
+                {"name": "bureau_balance.csv", "required": True},
+            ])
             ok, errors = validate_manifest(data_dir, manifest_path)
             assert not ok
             error_text = "|".join(errors).lower()
@@ -164,14 +146,11 @@ class TestValidateManifestFailClosed:
             for f in ["application_train.csv", "bureau.csv", "bureau_balance.csv"]:
                 (data_dir / f).write_text((FIXTURES / f).read_text())
             manifest_path = Path(tmp) / "manifest.yaml"
-            _write_manifest(
-                manifest_path,
-                [
-                    {"name": "application_train.csv", "required": True},
-                    {"name": "bureau.csv", "required": True},
-                    {"name": "bureau_balance.csv", "required": True},
-                ],
-            )
+            _write_manifest(manifest_path, [
+                {"name": "application_train.csv", "required": True},
+                {"name": "bureau.csv", "required": True},
+                {"name": "bureau_balance.csv", "required": True},
+            ])
             assert populate_manifest(data_dir, manifest_path)
             # Add a row, re-validate
             (data_dir / "bureau.csv").write_text("SK_ID_CURR,SK_ID_BUREAU\n1,100\n2,200\n")
@@ -186,14 +165,11 @@ class TestValidateManifestFailClosed:
             for f in ["application_train.csv", "bureau.csv", "bureau_balance.csv"]:
                 (data_dir / f).write_text((FIXTURES / f).read_text())
             manifest_path = Path(tmp) / "manifest.yaml"
-            _write_manifest(
-                manifest_path,
-                [
-                    {"name": "application_train.csv", "required": True},
-                    {"name": "bureau.csv", "required": True},
-                    {"name": "bureau_balance.csv", "required": True},
-                ],
-            )
+            _write_manifest(manifest_path, [
+                {"name": "application_train.csv", "required": True},
+                {"name": "bureau.csv", "required": True},
+                {"name": "bureau_balance.csv", "required": True},
+            ])
             assert populate_manifest(data_dir, manifest_path)
             (data_dir / "bureau.csv").write_text("SK_ID_BUREAU_RENAMED\n100\n")
             ok, errors = validate_manifest(data_dir, manifest_path)
@@ -209,14 +185,11 @@ class TestValidateManifestFailClosed:
             # bureau missing SK_ID_CURR
             (data_dir / "bureau.csv").write_text("SK_ID_BUREAU\n100\n")
             manifest_path = Path(tmp) / "manifest.yaml"
-            _write_manifest(
-                manifest_path,
-                [
-                    {"name": "application_train.csv", "required": True},
-                    {"name": "bureau.csv", "required": True},
-                    {"name": "bureau_balance.csv", "required": True},
-                ],
-            )
+            _write_manifest(manifest_path, [
+                {"name": "application_train.csv", "required": True},
+                {"name": "bureau.csv", "required": True},
+                {"name": "bureau_balance.csv", "required": True},
+            ])
             # populate will compute SHA/rows/cols but then validation fails → returns False
             ok = populate_manifest(data_dir, manifest_path)
             assert not ok, "populate should fail when required column is missing"
@@ -230,30 +203,25 @@ class TestValidateManifestFailClosed:
             # bureau_balance missing STATUS
             (data_dir / "bureau_balance.csv").write_text("SK_ID_BUREAU,MONTHS_BALANCE\n100,0\n")
             manifest_path = Path(tmp) / "manifest.yaml"
-            _write_manifest(
-                manifest_path,
-                [
-                    {"name": "application_train.csv", "required": True},
-                    {"name": "bureau.csv", "required": True},
-                    {"name": "bureau_balance.csv", "required": True},
-                ],
-            )
+            _write_manifest(manifest_path, [
+                {"name": "application_train.csv", "required": True},
+                {"name": "bureau.csv", "required": True},
+                {"name": "bureau_balance.csv", "required": True},
+            ])
             ok = populate_manifest(data_dir, manifest_path)
             assert not ok, "populate should fail when required column (STATUS) is missing"
 
 
 class TestManifestPopulate:
+
     def test_populate_required_missing_fails(self):
         with tempfile.TemporaryDirectory() as tmp:
             data_dir = Path(tmp) / "data"
             data_dir.mkdir()
             manifest_path = Path(tmp) / "manifest.yaml"
-            _write_manifest(
-                manifest_path,
-                [
-                    {"name": "application_train.csv", "required": True},
-                ],
-            )
+            _write_manifest(manifest_path, [
+                {"name": "application_train.csv", "required": True},
+            ])
             ok = populate_manifest(data_dir, manifest_path)
             assert not ok
 
@@ -273,14 +241,11 @@ class TestManifestPopulate:
             for f in ["application_train.csv", "bureau.csv", "bureau_balance.csv"]:
                 (data_dir / f).write_text((FIXTURES / f).read_text())
             manifest_path = Path(tmp) / "manifest.yaml"
-            _write_manifest(
-                manifest_path,
-                [
-                    {"name": "application_train.csv", "required": True},
-                    {"name": "bureau.csv", "required": True},
-                    {"name": "bureau_balance.csv", "required": True},
-                ],
-            )
+            _write_manifest(manifest_path, [
+                {"name": "application_train.csv", "required": True},
+                {"name": "bureau.csv", "required": True},
+                {"name": "bureau_balance.csv", "required": True},
+            ])
             assert populate_manifest(data_dir, manifest_path)
             ok, errors = validate_manifest(data_dir, manifest_path)
             assert ok, errors
@@ -296,14 +261,11 @@ class TestManifestPopulate:
             with open(data_dir / "bureau_balance.csv", "w") as f:
                 f.write("SK_ID_BUREAU,MONTHS_BALANCE\n100,0\n")
             manifest_path = Path(tmp) / "manifest.yaml"
-            _write_manifest(
-                manifest_path,
-                [
-                    {"name": "application_train.csv", "required": True},
-                    {"name": "bureau.csv", "required": True},
-                    {"name": "bureau_balance.csv", "required": True},
-                ],
-            )
+            _write_manifest(manifest_path, [
+                {"name": "application_train.csv", "required": True},
+                {"name": "bureau.csv", "required": True},
+                {"name": "bureau_balance.csv", "required": True},
+            ])
             before = _sha256_file(manifest_path)
             ok = populate_manifest(data_dir, manifest_path)
             assert not ok  # Should fail due to missing STATUS column
@@ -339,6 +301,7 @@ class TestManifestPopulate:
 
 
 class TestProductionManifestNotMutated:
+
     def test_unit_tests_do_not_mutate_production_manifest(self):
         """Running tests must not modify the production manifest."""
         before = _sha256_file(PRODUCTION_MANIFEST)
@@ -349,14 +312,11 @@ class TestProductionManifestNotMutated:
             for f in ["application_train.csv", "bureau.csv", "bureau_balance.csv"]:
                 (data_dir / f).write_text((FIXTURES / f).read_text())
             manifest_path = Path(tmp) / "manifest.yaml"
-            _write_manifest(
-                manifest_path,
-                [
-                    {"name": "application_train.csv", "required": True},
-                    {"name": "bureau.csv", "required": True},
-                    {"name": "bureau_balance.csv", "required": True},
-                ],
-            )
+            _write_manifest(manifest_path, [
+                {"name": "application_train.csv", "required": True},
+                {"name": "bureau.csv", "required": True},
+                {"name": "bureau_balance.csv", "required": True},
+            ])
             validate_manifest(data_dir, manifest_path)
         after = _sha256_file(PRODUCTION_MANIFEST)
         assert after == before, "Production manifest was mutated by tests!"
