@@ -23,11 +23,13 @@ from riskcloud.contracts.validation import (
     coerce_datetime_utc,
     coerce_enum,
     coerce_int_opt,
+    coerce_str,
     coerce_str_nonempty,
     coerce_str_nonempty_opt,
     coerce_str_opt,
-    deep_freeze,
-    deep_thaw,
+    freeze_json,
+    thaw_json,
+    validate_sha256_hex,
 )
 
 
@@ -63,25 +65,74 @@ def compute_event_id(
     entity_id: str,
     event_type: EventType,
     event_time_utc: datetime,
-    source_record_id: str = "",
-    source_record_revision: str = "",
+    source_record_id: str | None = None,
+    source_record_revision: str | None = None,
+    payload_sha256: str | None = None,
 ) -> str:
-    """Compute canonical event_id from immutable business key.
+    """Compute canonical event_id from source or content identity.
+
+    Priority: source_record_id > payload_sha256.
+    A discriminator ("source_record" vs "payload_sha256") is included in the
+    hash to prevent ambiguity between the two identity modes.
 
     Uses UTC-normalized time for same-instant-same-ID.
     Does NOT use payload_uri (URIs are not stable identity).
     """
     utc_time = event_time_utc.astimezone(timezone.utc)
-    parts = [
-        dataset_id,
-        entity_type.value,
-        entity_id,
-        event_type.value,
-        utc_time.strftime("%Y-%m-%dT%H:%M:%S.%fZ"),
-        source_record_id,
-        source_record_revision,
-    ]
+    time_part = utc_time.strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+
+    if source_record_id:
+        parts = [
+            dataset_id, entity_type.value, entity_id, event_type.value,
+            time_part,
+            "source_record",
+            source_record_id,
+            source_record_revision or "",
+        ]
+    elif payload_sha256:
+        parts = [
+            dataset_id, entity_type.value, entity_id, event_type.value,
+            time_part,
+            "payload_sha256",
+            payload_sha256.lower(),
+        ]
+    else:
+        raise ValueError("source_record_id or payload_sha256 is required to compute event_id")
+
     return hashlib.sha256("|".join(parts).encode()).hexdigest()
+
+
+def compute_expected_event_id(
+    dataset_id: str,
+    entity_type: EntityType,
+    entity_id: str,
+    event_type: EventType,
+    event_time: datetime,
+    source_record_id: str = "",
+    source_record_revision: str = "",
+    payload_sha256: str | None = None,
+) -> str:
+    """Compute event_id from the same inputs that the parser uses.
+
+    Returns a sentinel when neither identity material is present — the
+    parser will reject this case separately.
+    """
+    sid = source_record_id if source_record_id else ""
+    srev = source_record_revision if source_record_revision else ""
+    sha = payload_sha256 if payload_sha256 else None
+    try:
+        return compute_event_id(
+            dataset_id=dataset_id,
+            entity_type=entity_type,
+            entity_id=entity_id,
+            event_type=event_type,
+            event_time_utc=event_time,
+            source_record_id=sid if sid else None,
+            source_record_revision=srev if srev else None,
+            payload_sha256=sha,
+        )
+    except ValueError:
+        return ""
 
 
 # -----------------------------------------------------------------
@@ -109,7 +160,7 @@ class Event:
 
     def __post_init__(self):
         """Deep-freeze headers for recursive immutability."""
-        object.__setattr__(self, "headers", deep_freeze(self.headers))
+        object.__setattr__(self, "headers", freeze_json(self.headers))
 
     # -- strict entry points -------------------------------------------
 
@@ -153,21 +204,25 @@ class Event:
         customer_id = _str("customer_id")
         source_system = _str("source_system")
 
-        # Source record ID – type-check, fail if wrong type
-        source_record_id_raw = d.get("source_record_id", "")
+        # Source record ID — type-check, allow empty when payload_sha256 provides identity
+        source_record_id_raw = d.get("source_record_id")
+        source_record_id = ""
         if source_record_id_raw is not None:
             try:
-                source_record_id = coerce_str_nonempty_opt(source_record_id_raw, "source_record_id") or ""
+                coerce_str(source_record_id_raw, "source_record_id")
+                source_record_id = source_record_id_raw if isinstance(source_record_id_raw, str) else ""
             except ContractValidationError as e:
                 errors.extend(e.errors)
-                source_record_id = ""
-        else:
-            source_record_id = ""
 
         source_record_revision_raw = d.get("source_record_revision", "")
         if source_record_revision_raw is not None:
             try:
-                source_record_revision = coerce_str_opt(source_record_revision_raw, "source_record_revision") or ""
+                coerce_str_opt(source_record_revision_raw, "source_record_revision")
+                source_record_revision = (
+                    source_record_revision_raw
+                    if isinstance(source_record_revision_raw, str)
+                    else ""
+                )
             except ContractValidationError as e:
                 errors.extend(e.errors)
                 source_record_revision = ""
@@ -229,11 +284,15 @@ class Event:
         # Payload fields
         payload_uri = _str_opt("payload_uri")
         payload_sha256 = _str_opt("payload_sha256")
-        if payload_sha256 is not None and len(payload_sha256) != 64:
-            errors.append(FieldError("payload_sha256", "must be 64 hex characters", payload_sha256))
+        if payload_sha256 is not None:
+            try:
+                validate_sha256_hex(payload_sha256, "payload_sha256")
+            except ContractValidationError as e:
+                errors.extend(e.errors)
+                payload_sha256 = None
 
         # Collision-proof requirement
-        if not source_record_id and not payload_sha256:
+        if not source_record_id.strip() and not payload_sha256:
             errors.append(FieldError(
                 "source_record_id",
                 "either source_record_id or payload_sha256 must be non-empty to prevent collision",
@@ -254,11 +313,13 @@ class Event:
 
         # ---- ENFORCE canonical event_id ----
         if event_time.tzinfo is not None:
-            expected_id = compute_event_id(
+            expected_id = compute_expected_event_id(
                 dataset_id, entity_type, entity_id, evt_type, event_time,
-                source_record_id, source_record_revision,
+                source_record_id=source_record_id,
+                source_record_revision=source_record_revision,
+                payload_sha256=payload_sha256,
             )
-            if not hmac.compare_digest(event_id, expected_id):
+            if expected_id and not hmac.compare_digest(event_id, expected_id):
                 errors.append(FieldError(
                     "event_id",
                     f"does not match canonical identity; expected={expected_id[:16]}..., got={event_id[:16]}...",
@@ -303,7 +364,7 @@ class Event:
             "source_record_revision": self.source_record_revision,
             "payload_uri": self.payload_uri,
             "payload_sha256": self.payload_sha256,
-            "headers": deep_thaw(self.headers),
+            "headers": thaw_json(self.headers),
         }
 
     def to_json(self) -> str:

@@ -141,13 +141,20 @@ class TestEventContract:
 
     def test_reject_missing_source_record_and_sha(self):
         with pytest.raises(ContractValidationError) as exc:
-            Event.parse(_valid_event_dict(
-                source_record_id="",
-                source_record_revision="",
-                payload_sha256=None,
-                event_id=compute_event_id("test_ds", EntityType.LOAN_APPLICATION, "SK_ID_CURR:100001",
-                                          EventType.LOAN_APPLICATION, NOW, "", ""),
-            ))
+            Event.parse({
+                "dataset_id": "test_ds",
+                "event_id": "any-id",
+                "entity_type": "loan_application",
+                "entity_id": "SK_ID_CURR:100001",
+                "customer_id": "customer:abc",
+                "event_type": "loan_application",
+                "event_time": NOW.isoformat(),
+                "available_at": (NOW + timedelta(seconds=10)).isoformat(),
+                "ingested_at": (NOW + timedelta(seconds=20)).isoformat(),
+                "source_system": "test_adapter",
+                "source_record_id": "",
+                "source_record_revision": "",
+            })
         assert any("source_record_id" in e.field_path for e in exc.value.errors)
 
     def test_reject_wrong_type(self):
@@ -284,9 +291,11 @@ class TestFeatureCatalogEntryContract:
     # -- deep immutability: tags --
 
     def test_tags_are_deeply_immutable(self):
-        entry = FeatureCatalogEntry.parse(_valid_feature_dict(tags=[["nested"]]))
-        with pytest.raises((TypeError, AttributeError)):
-            entry.tags[0].append("mutated")  # type: ignore[union-attr,index]
+        """Tags are flat strings; nested lists are rejected. Immutability tested via tuple."""
+        entry = FeatureCatalogEntry.parse(_valid_feature_dict(tags=["alpha", "beta"]))
+        assert isinstance(entry.tags, tuple)
+        with pytest.raises(AttributeError):
+            entry.tags.append("new")  # type: ignore[union-attr]
 
 
 # =================================================================
@@ -359,3 +368,121 @@ class TestDocumentParseResultContract:
         doc = DocumentParseResult.parse(_valid_doc_dict(metadata={"quality": {"warnings": ["w1"]}}))
         with pytest.raises((TypeError, AttributeError)):
             doc.metadata["quality"]["warnings"].append("mutated")  # type: ignore[union-attr,index]
+
+    def test_metadata_rejects_bytearray(self):
+        with pytest.raises(ContractValidationError) as exc:
+            DocumentParseResult.parse(_valid_doc_dict(metadata={"bad": bytearray(b"abc")}))
+        errors_text = "|".join(str(e) for e in exc.value.errors)
+        assert "non-json" in errors_text.lower() or "metadata" in errors_text.lower()
+
+    def test_metadata_rejects_set(self):
+        with pytest.raises(ContractValidationError) as exc:
+            DocumentParseResult.parse(_valid_doc_dict(metadata={"s": {"a", "b"}}))
+        errors_text = "|".join(str(e) for e in exc.value.errors)
+        assert "non-json" in errors_text.lower()
+
+    def test_to_json_succeeds_for_valid_doc(self):
+        doc = DocumentParseResult.parse(_valid_doc_dict(metadata={"quality": 0.9}))
+        s = doc.to_json()
+        assert json.loads(s)["document_id"] == "doc-001"
+
+
+# =================================================================
+# SHA-256 hex validation
+# =================================================================
+
+class TestSha256Validation:
+
+    def test_event_rejects_non_hex_sha(self):
+        with pytest.raises(ContractValidationError):
+            Event.parse(_valid_event_dict(
+                source_record_id="",
+                payload_sha256="z" * 64,
+                event_id=compute_event_id(
+                    "test_ds", EntityType.LOAN_APPLICATION, "SK_ID_CURR:100001",
+                    EventType.LOAN_APPLICATION, NOW,
+                    payload_sha256="z" * 64,
+                ),
+            ))
+
+    def test_document_rejects_non_hex_sha(self):
+        with pytest.raises(ContractValidationError):
+            DocumentParseResult.parse(_valid_doc_dict(content_sha256="z" * 64))
+
+
+# =================================================================
+# Payload-only event identity
+# =================================================================
+
+class TestPayloadOnlyIdentity:
+
+    def test_payload_only_event_is_valid(self):
+        sha = "a" * 64
+        eid = compute_event_id(
+            "test_ds", EntityType.LOAN_APPLICATION, "SK_ID_CURR:100001",
+            EventType.LOAN_APPLICATION, NOW,
+            payload_sha256=sha,
+        )
+        evt = Event.parse(_valid_event_dict(
+            source_record_id="",
+            source_record_revision="",
+            payload_sha256=sha,
+            event_id=eid,
+        ))
+        assert evt.payload_sha256 == sha
+
+    def test_different_payload_sha_produces_different_event_id(self):
+        sha1 = "a" * 64
+        sha2 = "b" * 64
+        eid1 = compute_event_id(
+            "test_ds", EntityType.LOAN_APPLICATION, "SK_ID_CURR:100001",
+            EventType.LOAN_APPLICATION, NOW,
+            payload_sha256=sha1,
+        )
+        eid2 = compute_event_id(
+            "test_ds", EntityType.LOAN_APPLICATION, "SK_ID_CURR:100001",
+            EventType.LOAN_APPLICATION, NOW,
+            payload_sha256=sha2,
+        )
+        assert eid1 != eid2
+
+
+# =================================================================
+# Regression: event_time <= available_at
+# =================================================================
+
+class TestEventTimeOrdering:
+
+    def test_event_time_must_not_exceed_available_at(self):
+        with pytest.raises(ContractValidationError) as exc:
+            Event.parse(_valid_event_dict(
+                event_time=(NOW + timedelta(hours=1)).isoformat(),
+                available_at=NOW.isoformat(),
+                event_id=compute_event_id(
+                    "test_ds", EntityType.LOAN_APPLICATION, "SK_ID_CURR:100001",
+                    EventType.LOAN_APPLICATION, NOW + timedelta(hours=1),
+                    source_record_id="src-rec-1",
+                ),
+            ))
+        assert any("event_time" in e.field_path for e in exc.value.errors)
+
+
+# =================================================================
+# Tags must be flat strings
+# =================================================================
+
+class TestTagsValidation:
+
+    def test_tags_rejects_non_string_element(self):
+        with pytest.raises(ContractValidationError) as exc:
+            FeatureCatalogEntry.parse(_valid_feature_dict(tags=[123]))
+        assert any("tags" in e.field_path for e in exc.value.errors)
+
+    def test_tags_accepts_flat_strings(self):
+        entry = FeatureCatalogEntry.parse(_valid_feature_dict(tags=["alpha", "beta"]))
+        assert entry.tags == ("alpha", "beta")
+
+    def test_tags_rejects_nested_lists(self):
+        with pytest.raises(ContractValidationError) as exc:
+            FeatureCatalogEntry.parse(_valid_feature_dict(tags=[["nested"]]))
+        assert any("tags" in e.field_path for e in exc.value.errors)

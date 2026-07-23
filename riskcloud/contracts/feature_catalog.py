@@ -23,8 +23,8 @@ from riskcloud.contracts.validation import (
     coerce_int_opt,
     coerce_str_nonempty,
     coerce_str_opt,
-    deep_freeze,
-    deep_thaw,
+    freeze_json,
+    thaw_json,
 )
 
 
@@ -64,11 +64,11 @@ class FeatureCatalogEntry:
     cost_unit: float | None = None
     lineage_expression: str | None = None
     description: str = ""
-    tags: Any = ()
+    tags: tuple[str, ...] = ()
 
     def __post_init__(self):
         """Deep-freeze tags for recursive immutability."""
-        object.__setattr__(self, "tags", deep_freeze(self.tags))
+        object.__setattr__(self, "tags", freeze_json(self.tags))
 
     # -- strict entry points -------------------------------------------
 
@@ -181,10 +181,16 @@ class FeatureCatalogEntry:
         if cost_unit is not None and cost_unit < 0:
             errors.append(FieldError("cost_unit", "must be non-negative", cost_unit))
 
-        # Tags: accept list or tuple, fail on wrong type
+        # Tags: accept list or tuple of strings
         tags_raw = d.get("tags", ())
         if isinstance(tags_raw, (list, tuple)):
-            tags = tuple(tags_raw)
+            tags_list: list[str] = []
+            for i, t in enumerate(tags_raw):
+                if not isinstance(t, str):
+                    errors.append(FieldError(f"tags[{i}]", f"must be str, got {type(t).__name__}", t))
+                else:
+                    tags_list.append(t)
+            tags = tuple(tags_list)
         elif tags_raw is None:
             tags = ()
         else:
@@ -263,7 +269,7 @@ class FeatureCatalogEntry:
             "cost_unit": self.cost_unit,
             "lineage_expression": self.lineage_expression,
             "description": self.description,
-            "tags": deep_thaw(self.tags),
+            "tags": thaw_json(self.tags),
         }
 
     def to_json(self) -> str:

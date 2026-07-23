@@ -8,8 +8,10 @@ compatibility and tests that deliberately construct invalid data.
 from __future__ import annotations
 
 import math
+import re
 from dataclasses import dataclass, field
 from datetime import datetime
+from types import MappingProxyType
 from typing import Any
 
 # -----------------------------------------------------------------
@@ -40,9 +42,16 @@ class FieldError:
         return f"{self.field_path}: {self.message}"
 
 
-# -----------------------------------------------------------------
-# Type-safe coercions (fail on wrong type, unlike silent defaults)
-# -----------------------------------------------------------------
+_SHA256_RE = re.compile(r"^[0-9a-fA-F]{64}$")
+
+
+def validate_sha256_hex(value: str, field_path: str) -> str:
+    """Validate a SHA-256 hex string. Returns normalized lowercase."""
+    if not _SHA256_RE.match(value):
+        raise ContractValidationError([
+            FieldError(field_path, f"must be 64 hex characters, got length {len(value)}", value),
+        ])
+    return value.lower()
 
 def _check_type(value: Any, expected: type, field_path: str) -> list[FieldError]:
     """Require exact type match. None is always acceptable for Optional fields."""
@@ -190,36 +199,56 @@ def coerce_enum(value: Any, enum_cls: type, field_path: str) -> Any:
 
 
 # -----------------------------------------------------------------
-# Defensive copy helpers for deep immutability
+# JSON-safe recursive freeze — only accepts JSON primitives
 # -----------------------------------------------------------------
 
-# -----------------------------------------------------------------
-# Deep immutability — recursive freeze and thaw
-# -----------------------------------------------------------------
+_JSON_SCALAR_TYPES = (str, bool, int, type(None))
 
-def deep_freeze(value: Any) -> Any:
-    """Recursively freeze: dict→MappingProxyType, list/tuple→tuple, set→frozenset."""
-    from types import MappingProxyType
+
+def freeze_json(value: Any, field_path: str = "value") -> Any:
+    """Recursively freeze JSON-compatible values only.
+
+    Allowed: None, bool, int, float (finite), str, list, tuple, dict with str keys.
+    Rejected: set, frozenset, bytearray, custom objects, non-UTF8 bytes, NaN/Inf.
+    Returns deeply immutable nested structure.
+    """
+    if value is None:
+        return None
+    if isinstance(value, bool):  # must precede int check (bool is subclass of int)
+        return value
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        if not math.isfinite(value):
+            raise ContractValidationError([
+                FieldError(field_path, "NaN/Inf is not valid JSON", value),
+            ])
+        return value
+    if isinstance(value, str):
+        return value
     if isinstance(value, dict):
-        return MappingProxyType({k: deep_freeze(v) for k, v in value.items()})
-    if isinstance(value, list):
-        return tuple(deep_freeze(v) for v in value)
-    if isinstance(value, tuple):
-        return tuple(deep_freeze(v) for v in value)
-    if isinstance(value, set):
-        return frozenset(deep_freeze(v) for v in value)
-    return value
+        frozen: dict = {}
+        for key, child in value.items():
+            if not isinstance(key, str):
+                raise ContractValidationError([
+                    FieldError(f"{field_path}.<key>", f"JSON keys must be str, got {type(key).__name__}", key),
+                ])
+            frozen[key] = freeze_json(child, f"{field_path}.{key}")
+        return MappingProxyType(frozen)
+    if isinstance(value, (list, tuple)):
+        return tuple(freeze_json(child, f"{field_path}[{i}]") for i, child in enumerate(value))
+
+    raise ContractValidationError([
+        FieldError(field_path, f"unsupported non-JSON type: {type(value).__name__}", value),
+    ])
 
 
-def deep_thaw(value: Any) -> Any:
-    """Recursively thaw: MappingProxyType→dict, frozenset/tuple→list."""
-    from types import MappingProxyType
+def thaw_json(value: Any) -> Any:
+    """Recursively thaw: MappingProxyType→dict, tuple→list."""
     if isinstance(value, MappingProxyType):
-        return {k: deep_thaw(v) for k, v in value.items()}
-    if isinstance(value, frozenset):
-        return [deep_thaw(v) for v in value]
+        return {k: thaw_json(v) for k, v in value.items()}
     if isinstance(value, tuple):
-        return [deep_thaw(v) for v in value]
+        return [thaw_json(v) for v in value]
     if isinstance(value, dict):
-        return {k: deep_thaw(v) for k, v in value.items()}
+        return {k: thaw_json(v) for k, v in value.items()}
     return value

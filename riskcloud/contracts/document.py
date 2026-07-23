@@ -25,8 +25,9 @@ from riskcloud.contracts.validation import (
     coerce_float_opt,
     coerce_str_nonempty,
     coerce_str_opt,
-    deep_freeze,
-    deep_thaw,
+    freeze_json,
+    thaw_json,
+    validate_sha256_hex,
 )
 
 
@@ -61,7 +62,7 @@ class DocumentParseResult:
 
     def __post_init__(self):
         """Deep-freeze metadata for recursive immutability."""
-        object.__setattr__(self, "metadata", deep_freeze(self.metadata))
+        object.__setattr__(self, "metadata", freeze_json(self.metadata))
 
     # -- entity linkage -------------------------------------------------
 
@@ -124,6 +125,11 @@ class DocumentParseResult:
         document_id = _str("document_id")
         object_uri = _str("object_uri")
         content_sha256 = _str("content_sha256")
+        if content_sha256:
+            try:
+                content_sha256 = validate_sha256_hex(content_sha256, "content_sha256")
+            except ContractValidationError as e:
+                errors.extend(e.errors)
         document_type = _str("document_type")
 
         if len(content_sha256) != 64:
@@ -278,7 +284,7 @@ class DocumentParseResult:
             "tamper_signal": self.tamper_signal,
             "model_version": self.model_version,
             "processed_at": self.processed_at.isoformat(),
-            "metadata": deep_thaw(self.metadata),
+            "metadata": thaw_json(self.metadata),
         }
 
     def to_json(self) -> str:
