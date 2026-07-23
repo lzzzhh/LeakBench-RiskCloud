@@ -90,54 +90,66 @@ class Adapter(ABC):
     def validate_adapter(self) -> list[FieldError]:
         """Run closure checks on the adapter configuration.
 
-        Checks performed:
-          1. Basic identity fields (dataset_id, display_name, version format)
-          2. Catalog non-empty
-          3. Catalog feature_ids match semantic_group_mapping keys
-          4. Catalog semantic_group_id matches mapping value (if both set)
-          5. Label column ↔ label_time column consistency
-          6. Each publishable catalog entry passes the publishable check
+        All attribute access is guarded — this method must never raise.
         """
         errors: list[FieldError] = []
 
-        # 1. Identity
-        if not self.dataset_id.strip():
-            errors.append(FieldError("dataset_id", "must be non-empty"))
-        if not self.display_name.strip():
-            errors.append(FieldError("display_name", "must be non-empty"))
-        if not _SEMVER_RE.fullmatch(self.adapter_version):
-            errors.append(FieldError("adapter_version", f"must be semver (X.Y.Z), got '{self.adapter_version}'"))
+        def _check_nonempty_str(field: str, value: object) -> None:
+            if not isinstance(value, str) or not value.strip():
+                errors.append(FieldError(field, "must be a non-empty string"))
 
-        # 1a. Column contracts — must be non-empty strings
-        prediction_col = self.prediction_time_column()
-        if not isinstance(prediction_col, str) or not prediction_col.strip():
-            errors.append(FieldError("prediction_time_column", "must be a non-empty string"))
+        # 1. Identity — guard against None / wrong types
+        _check_nonempty_str("dataset_id", self.dataset_id)
+        _check_nonempty_str("display_name", self.display_name)
+        try:
+            ver = self.adapter_version
+            if not isinstance(ver, str) or not _SEMVER_RE.fullmatch(ver):
+                errors.append(FieldError("adapter_version", f"must be semver (X.Y.Z), got '{ver}'"))
+        except Exception:
+            errors.append(FieldError("adapter_version", "failed to read adapter_version"))
 
-        label_col = self.label_column()
-        label_time_col = self.label_time_column()
-        for field_name, value in (("label_column", label_col), ("label_time_column", label_time_col)):
-            if value is not None:
-                if not isinstance(value, str) or not value.strip():
-                    errors.append(FieldError(field_name, "must be None or a non-empty string"))
+        # 1a. Column contracts
+        try:
+            pcol = self.prediction_time_column()
+        except Exception:
+            pcol = None
+        _check_nonempty_str("prediction_time_column", pcol)
 
-        # 1b. Guard mapping and catalog types
-        mapping = self.semantic_group_mapping()
-        if not isinstance(mapping, dict):
-            errors.append(FieldError("semantic_group_mapping", f"expected dict, got {type(mapping).__name__}"))
-            mapping = {}
-        for k, v in mapping.items():
-            if not isinstance(k, str) or not isinstance(v, str):
-                errors.append(FieldError("semantic_group_mapping", "keys and values must be str"))
+        try:
+            label_col = self.label_column()
+        except Exception:
+            label_col = None
+        try:
+            label_time_col = self.label_time_column()
+        except Exception:
+            label_time_col = None
 
-        catalog = self.build_feature_catalog()
-        if not isinstance(catalog, list):
-            errors.append(FieldError("feature_catalog", f"expected list, got {type(catalog).__name__}"))
-            catalog = []
-        # 2. Catalog non-empty
+        for fname, val in (("label_column", label_col), ("label_time_column", label_time_col)):
+            if val is not None and (not isinstance(val, str) or not val.strip()):
+                errors.append(FieldError(fname, "must be None or a non-empty string"))
+
+        # 2. Build clean catalog (filter non-entries)
+        raw_catalog: list = []
+        try:
+            raw_catalog_raw = self.build_feature_catalog()
+            if not isinstance(raw_catalog_raw, list):
+                errors.append(FieldError("feature_catalog", f"expected list, got {type(raw_catalog_raw).__name__}"))
+            else:
+                raw_catalog = raw_catalog_raw
+        except Exception:
+            errors.append(FieldError("feature_catalog", "failed to read catalog"))
+
+        catalog: list[FeatureCatalogEntry] = []
+        for i, entry in enumerate(raw_catalog):
+            if not isinstance(entry, FeatureCatalogEntry):
+                msg = f"expected FeatureCatalogEntry, got {type(entry).__name__}"
+                errors.append(FieldError(f"feature_catalog[{i}]", msg))
+                continue
+            catalog.append(entry)
+
         if len(catalog) == 0:
-            errors.append(FieldError("feature_catalog", "must contain at least one entry"))
+            errors.append(FieldError("feature_catalog", "must contain at least one valid entry"))
 
-        # Check for duplicate feature_ids
         feature_ids = [e.feature_id for e in catalog]
         if len(set(feature_ids)) != len(feature_ids):
             seen: dict[str, int] = {}
@@ -146,9 +158,31 @@ class Adapter(ABC):
             dupes = [fid for fid, count in seen.items() if count > 1]
             errors.append(FieldError("feature_catalog", f"duplicate feature_ids: {dupes}"))
 
-        # 3. Catalog ↔ semantic mapping closure (mapping already loaded above)
+        # 3. Build clean mapping (only str→str pairs)
+        raw_mapping: dict = {}
+        try:
+            raw_mapping = self.semantic_group_mapping()
+            if not isinstance(raw_mapping, dict):
+                errors.append(FieldError("semantic_group_mapping", f"expected dict, got {type(raw_mapping).__name__}"))
+                raw_mapping = {}
+        except Exception:
+            errors.append(FieldError("semantic_group_mapping", "failed to read mapping"))
+
+        clean_mapping: dict[str, str] = {}
+        for k, v in raw_mapping.items():
+            if not isinstance(k, str) or not k.strip():
+                msg = f"key must be non-empty str, got {type(k).__name__}: {k}"
+                errors.append(FieldError("semantic_group_mapping", msg))
+                continue
+            if not isinstance(v, str) or not v.strip():
+                msg = f"value for '{k}' must be non-empty str, got {type(v).__name__}"
+                errors.append(FieldError("semantic_group_mapping", msg))
+                continue
+            clean_mapping[k] = v
+
+        # 4. Catalog ↔ clean mapping closure
         catalog_ids = set(feature_ids)
-        mapping_ids = set(mapping.keys())
+        mapping_ids = set(clean_mapping.keys())
 
         only_in_catalog = catalog_ids - mapping_ids
         only_in_mapping = mapping_ids - catalog_ids
@@ -164,9 +198,9 @@ class Adapter(ABC):
                 f"mapping contains feature_ids not in catalog: {sorted(only_in_mapping)}",
             ))
 
-        # 4. Catalog semantic_group_id must match mapping value
+        # 5. Catalog semantic_group_id must match mapping value
         catalog_map = {e.feature_id: e.semantic_group_id for e in catalog}
-        for fid, mapped_group in mapping.items():
+        for fid, mapped_group in clean_mapping.items():
             catalog_group = catalog_map.get(fid)
             if catalog_group is not None and catalog_group.strip():
                 if catalog_group != mapped_group:
@@ -175,24 +209,20 @@ class Adapter(ABC):
                         f"semantic_group_id '{catalog_group}' != mapping value '{mapped_group}'",
                     ))
 
-        # 5. Label column ↔ label_time column consistency (variables from step 1a)
+        # 6. Label column ↔ label_time column consistency
         has_label = label_col is not None
         has_label_time = label_time_col is not None
         if has_label and not has_label_time:
-            errors.append(FieldError(
-                "label_time_column",
-                "must be set when label_column is set",
-            ))
+            errors.append(FieldError("label_time_column", "must be set when label_column is set"))
         if has_label_time and not has_label:
-            errors.append(FieldError(
-                "label_column",
-                "must be set when label_time_column is set",
-            ))
+            errors.append(FieldError("label_column", "must be set when label_time_column is set"))
 
-        # 6. Publishable check for every catalog entry
+        # 7. Publishable check for every valid catalog entry
         for entry in catalog:
-            pub_errors = entry.publishable_errors()
-            for pe in pub_errors:
-                errors.append(pe)
+            try:
+                pub_errors = entry.publishable_errors()
+                errors.extend(pub_errors)
+            except Exception:
+                errors.append(FieldError(entry.feature_id, "failed to check publishable"))
 
         return errors

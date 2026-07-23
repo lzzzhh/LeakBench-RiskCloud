@@ -42,14 +42,21 @@ class FieldError:
         return f"{self.field_path}: {self.message}"
 
 
-_SHA256_RE = re.compile(r"^[0-9a-fA-F]{64}$")
+_SHA256_HEX_RE = re.compile(r"[0-9a-fA-F]{64}")
 
 
-def validate_sha256_hex(value: str, field_path: str) -> str:
-    """Validate a SHA-256 hex string. Returns normalized lowercase."""
-    if not _SHA256_RE.match(value):
+def validate_sha256_hex(value: object, field_path: str) -> str:
+    """Validate a SHA-256 hex string. Returns normalized lowercase.
+
+    Rejects: non-strings, wrong length, non-hex characters, trailing newlines.
+    """
+    if not isinstance(value, str):
         raise ContractValidationError([
-            FieldError(field_path, f"must be 64 hex characters, got length {len(value)}", value),
+            FieldError(field_path, f"expected str, got {type(value).__name__}", value),
+        ])
+    if _SHA256_HEX_RE.fullmatch(value) is None:
+        raise ContractValidationError([
+            FieldError(field_path, "must be exactly 64 hexadecimal characters", value),
         ])
     return value.lower()
 

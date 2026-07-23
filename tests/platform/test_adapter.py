@@ -269,6 +269,48 @@ class TestAdapterInterface:
         errors = BadMapping().validate_adapter()
         assert any("semantic_group_mapping" in e.field_path for e in errors)
 
+    def test_validate_adapter_wrong_type_dataset_id(self):
+        class BadId(_ValidAdapter):
+            @property
+            def dataset_id(self):
+                return None
+
+        errors = BadId().validate_adapter()
+        assert any("dataset_id" in e.field_path for e in errors)
+
+    def test_validate_adapter_wrong_type_version(self):
+        class BadVer(_ValidAdapter):
+            @property
+            def adapter_version(self):
+                return None
+
+        errors = BadVer().validate_adapter()
+        assert any("adapter_version" in e.field_path for e in errors)
+
+    def test_validate_adapter_rejects_non_feature_catalog_element(self):
+        class BadCatalog(_ValidAdapter):
+            def build_feature_catalog(self):
+                return [object()]
+
+        errors = BadCatalog().validate_adapter()
+        assert any("FeatureCatalogEntry" in str(e) for e in errors)
+
+    def test_validate_adapter_mixed_mapping_key_types(self):
+        class BadMapping(_ValidAdapter):
+            def semantic_group_mapping(self):
+                return {"f1": "g1", 1: "invalid"}
+
+        errors = BadMapping().validate_adapter()
+        assert any("semantic_group_mapping" in e.field_path for e in errors)
+
+    def test_validate_adapter_empty_mapping_key(self):
+        class BadMapping(_ValidAdapter):
+            def semantic_group_mapping(self):
+                return {"": "g1"}
+
+        errors = BadMapping().validate_adapter()
+        assert any("semantic_group_mapping" in e.field_path for e in errors)
+
 
 # -----------------------------------------------------------------
 # Import isolation

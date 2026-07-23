@@ -310,7 +310,7 @@ class Event:
         payload_sha256 = _str_opt("payload_sha256")
         if payload_sha256 is not None:
             try:
-                validate_sha256_hex(payload_sha256, "payload_sha256")
+                payload_sha256 = validate_sha256_hex(payload_sha256, "payload_sha256")
             except ContractValidationError as e:
                 errors.extend(e.errors)
                 payload_sha256 = None

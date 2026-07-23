@@ -409,6 +409,37 @@ class TestSha256Validation:
         with pytest.raises(ContractValidationError):
             DocumentParseResult.parse(_valid_doc_dict(content_sha256="z" * 64))
 
+    def test_event_rejects_sha_with_trailing_newline(self):
+        with pytest.raises(ContractValidationError):
+            Event.parse(_valid_event_dict(
+                source_record_id="",
+                payload_sha256="a" * 64 + "\n",
+                event_id=compute_event_id(
+                    "test_ds", EntityType.LOAN_APPLICATION, "SK_ID_CURR:100001",
+                    EventType.LOAN_APPLICATION, NOW,
+                    payload_sha256="a" * 64 + "\n",
+                ),
+            ))
+
+    def test_document_rejects_sha_with_trailing_newline(self):
+        with pytest.raises(ContractValidationError):
+            DocumentParseResult.parse(_valid_doc_dict(content_sha256="a" * 64 + "\n"))
+
+    def test_sha_is_normalized_to_lowercase(self):
+        sha_upper = "A" * 64
+        normalized = sha_upper.lower()
+        eid = compute_event_id(
+            "test_ds", EntityType.LOAN_APPLICATION, "SK_ID_CURR:100001",
+            EventType.LOAN_APPLICATION, NOW,
+            payload_sha256=sha_upper,
+        )
+        evt = Event.parse(_valid_event_dict(
+            source_record_id="",
+            payload_sha256=sha_upper,
+            event_id=eid,
+        ))
+        assert evt.payload_sha256 == normalized
+
 
 # =================================================================
 # Payload-only event identity
