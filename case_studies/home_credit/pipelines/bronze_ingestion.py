@@ -468,31 +468,51 @@ def _ingest_one_table(
 
     # Current snapshot and metadata via Iceberg Java API
     try:
-        jtable = spark._jvm.org.apache.iceberg.spark.Spark3Util.loadIcebergTable(
+        jvm = spark._jvm
+        jtable = jvm.org.apache.iceberg.spark.Spark3Util.loadIcebergTable(
             spark._jsparkSession, table_name
         )
+        if jtable is None:
+            raise RuntimeError(f"{table_name}: Spark3Util returned null")
         jtable.refresh()
+
         java_snapshot = jtable.currentSnapshot()
         if java_snapshot is None:
             raise RuntimeError(f"{table_name}: Java current snapshot is empty")
         java_snapshot_id = java_snapshot.snapshotId()
+
+        # Get current metadata via HasTableOperations
+        cls_name = str(jtable.getClass().getName())
+        has_ops_cls = jvm.java.lang.Class.forName("org.apache.iceberg.HasTableOperations")
+        if not has_ops_cls.isInstance(jtable):
+            raise RuntimeError(f"{table_name}: {cls_name} does not implement HasTableOperations")
+
+        ops = jtable.operations()
+        current_meta = ops.refresh()
+        if current_meta is None:
+            raise RuntimeError(f"{table_name}: TableOperations returned null metadata")
+
+        metadata_snap = current_meta.currentSnapshot()
+        if metadata_snap is None:
+            raise RuntimeError(f"{table_name}: TableMetadata has no current snapshot")
+
+        # Cross-validate snapshot IDs
         if java_snapshot_id != snapshot_id:
             raise RuntimeError(
                 f"{table_name}: Java snapshot {java_snapshot_id} != SQL snapshot {snapshot_id}"
             )
-        ops = jtable.operations()
-        current_meta = ops.refresh()
-        metadata_snap = current_meta.currentSnapshot()
-        if metadata_snap is None:
-            raise RuntimeError(f"{table_name}: TableMetadata has no current snapshot")
         if metadata_snap.snapshotId() != snapshot_id:
             raise RuntimeError(
                 f"{table_name}: TableMetadata snapshot {metadata_snap.snapshotId()} "
                 f"!= committed snapshot {snapshot_id}"
             )
+
         metadata_location = current_meta.metadataFileLocation()
         if not metadata_location:
             raise RuntimeError(f"{table_name}: current metadata location is empty")
+
+        icebre_runtime_class = cls_name
+        metadata_snapshot_id_val = metadata_snap.snapshotId()
     except RuntimeError:
         raise
     except Exception as exc:
@@ -534,6 +554,9 @@ def _ingest_one_table(
     return {
         "table_name": table_name,
         "iceberg_snapshot_id": snapshot_id,
+        "java_snapshot_id": java_snapshot_id,
+        "metadata_snapshot_id": metadata_snapshot_id_val,
+        "iceberg_runtime_class": icebre_runtime_class,
         "metadata_location": metadata_location,
         "source_file_sha256": actual_file_sha,
         "source_header_sha256": actual_header_sha,

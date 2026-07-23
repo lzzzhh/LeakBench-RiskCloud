@@ -66,4 +66,14 @@ jobs:
           distribution: temurin
           java-version: "17"
       - run: pip install "pyspark==3.5.3" "PyYAML>=6" pytest
-      - run: python -m pytest tests/platform/home_credit/test_bronze_iceberg_integration.py -v --tb=short -m bronze_integration
+      - run: |
+          set -o pipefail
+          python -m pytest \
+            tests/platform/home_credit/test_bronze_iceberg_integration.py \
+            -v --tb=long -m bronze_integration \
+            2>&1 | tee bronze-integration.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: bronze-integration-log
+          path: bronze-integration.log
