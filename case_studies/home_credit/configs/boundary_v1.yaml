@@ -1,0 +1,21 @@
+# Home Credit Prediction Boundary V1
+# See docs/adr/0002-home-credit-proxy-time-boundary.md
+
+boundary:
+  boundary_version: hc-boundary-v1
+  boundary_type: synthetic_proxy
+  prediction_anchor_utc: "2000-01-01T00:00:00Z"
+  label_maturity_days: 365
+
+split:
+  policy: deterministic_hash_proxy_holdout
+  seed: 20260723
+  modulus: 10000
+  train_upper_exclusive: 8000
+  validation_upper_exclusive: 9000
+  oot_upper_exclusive: 10000
+
+semantics:
+  oot_is_calendar_time: false
+  application_test_supervised_evaluation: false
+  available_at_rule: application_snapshot_time
