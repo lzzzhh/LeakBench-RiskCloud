@@ -25,6 +25,31 @@ CONFIG_PATH = (
 )
 REQUIRED_FILES = ["application_train.csv", "bureau.csv", "bureau_balance.csv"]
 
+_ALLOWED_SPARK_SHUTDOWN = (ConnectionResetError, ConnectionRefusedError, BrokenPipeError, EOFError)
+
+
+def _flatten_exc_group(exc: BaseException) -> list[BaseException]:
+    try:
+        from builtins import BaseExceptionGroup
+    except ImportError:
+        from builtins import ExceptionGroup as BaseExceptionGroup  # type: ignore[assignment]
+    if isinstance(exc, BaseExceptionGroup):
+        leaves: list[BaseException] = []
+        for child in exc.exceptions:
+            leaves.extend(_flatten_exc_group(child))
+        return leaves
+    return [exc]
+
+
+def _stop_test_spark(spark) -> None:
+    try:
+        spark.stop()
+    except BaseException as exc:
+        leaves = _flatten_exc_group(exc)
+        if leaves and all(isinstance(e, _ALLOWED_SPARK_SHUTDOWN) for e in leaves):
+            return  # Known PySpark shutdown noise after JVM exit
+        raise
+
 
 def _copy_fixture_files(data_dir: Path) -> None:
     data_dir.mkdir(parents=True, exist_ok=True)
@@ -67,7 +92,7 @@ def module_setup():
                                 Path(tmp) / "receipts", "p12-a",
                                 git_commit="test", spark=spark)
     except Exception as exc:
-        spark.stop()
+        _stop_test_spark(spark)
         pytest.fail(f"ingest_bronze failed: {type(exc).__name__}: {exc}")
 
     try:
@@ -77,7 +102,7 @@ def module_setup():
             "config": config, "receipt": receipt, "spark": spark,
         }
     finally:
-        spark.stop()
+        _stop_test_spark(spark)
 
 
 # -----------------------------------------------------------------

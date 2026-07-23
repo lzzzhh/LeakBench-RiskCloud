@@ -347,18 +347,17 @@ def ingest_bronze(
 
     except BaseException as exc:
         primary_error = exc
-        _write_failure_artifact(
-            receipt_dir,
-            run_id,
-            manifest_sha,
-            manifest_path,
-            data_dir,
-            git_commit,
-            config,
-            completed_tables,
-            current_table,
-            exc,
-        )
+        try:
+            _write_failure_artifact(
+                receipt_dir, run_id, manifest_sha, manifest_path,
+                data_dir, git_commit, config, completed_tables, current_table, exc,
+            )
+        except BaseException as artifact_err:
+            # Don't mask the original error
+            note = f"Additionally failed to write bronze_failure.yaml: {type(artifact_err).__name__}"
+            add_note_fn = getattr(exc, "add_note", None)
+            if callable(add_note_fn):
+                add_note_fn(note)
         raise
     finally:
         if own_spark:
@@ -469,11 +468,17 @@ def _ingest_one_table(
         raise RuntimeError(f"{table_name}: no snapshot after write")
 
     meta_logs = spark.sql(
-        f"SELECT file FROM {table_name}.metadata_log_entries ORDER BY timestamp DESC LIMIT 1"
+        f"SELECT file, latest_snapshot_id FROM {table_name}.metadata_log_entries "
+        f"ORDER BY timestamp DESC LIMIT 1"
     ).collect()
     metadata_location = meta_logs[0].file if meta_logs else None
     if not metadata_location:
         raise RuntimeError(f"{table_name}: metadata location is empty")
+    if meta_logs and meta_logs[0].latest_snapshot_id != snapshot_id:
+        raise RuntimeError(
+            f"{table_name}: metadata latest_snapshot_id {meta_logs[0].latest_snapshot_id} "
+            f"!= current snapshot {snapshot_id}"
+        )
 
     # Verify metadata file exists via Hadoop FS
     try:
