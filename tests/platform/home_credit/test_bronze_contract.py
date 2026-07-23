@@ -44,7 +44,7 @@ class TestBronzeConfig:
             }, f)
             path = Path(f.name)
         try:
-            with pytest.raises(ValueError, match="missing"):
+            with pytest.raises(ValueError, match="table keys"):
                 BronzeConfig.from_yaml(path)
         finally:
             path.unlink()

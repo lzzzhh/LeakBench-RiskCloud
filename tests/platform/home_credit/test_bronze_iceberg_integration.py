@@ -16,7 +16,7 @@ from case_studies.home_credit.pipelines.bronze_ingestion import (
 )
 from riskcloud.adapters.home_credit.field_mapping import RAW_REQUIRED_COLUMNS
 
-pytestmark = pytest.mark.bronz_int
+pytestmark = pytest.mark.bronze_integration
 
 FIXTURES = Path(__file__).resolve().parents[3] / "tests" / "fixtures" / "home_credit"
 CONFIG_PATH = (
