@@ -1,0 +1,18 @@
+# P1.4 — Prediction Points configuration
+
+prediction_points:
+  version: hc-pp-v1
+  catalog: riskcloud
+  namespace: gold
+  table: riskcloud.gold.prediction_points
+
+boundary:
+  version: hc-boundary-v1
+  config_path: case_studies/home_credit/configs/boundary_v1.yaml
+
+adapter:
+  version: 1.0.0
+
+input:
+  silver_application: riskcloud.silver.application_train
+  silver_receipt_required: true

@@ -12,7 +12,6 @@ from riskcloud.contracts.feature_catalog import FeatureStage, LeakageRisk
 
 
 class TestCatalogStructure:
-
     def test_exactly_20_features(self):
         assert len(FEATURES) == 20
 

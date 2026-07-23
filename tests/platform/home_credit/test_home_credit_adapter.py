@@ -13,13 +13,7 @@ from riskcloud.adapters.home_credit.boundary import HomeCreditBoundaryConfig
 from riskcloud.contracts.validation import ContractValidationError
 
 UTC = timezone.utc
-CONFIG_PATH = (
-    Path(__file__).resolve().parents[3]
-    / "case_studies"
-    / "home_credit"
-    / "configs"
-    / "boundary_v1.yaml"
-)
+CONFIG_PATH = Path(__file__).resolve().parents[3] / "case_studies" / "home_credit" / "configs" / "boundary_v1.yaml"
 FIXTURES = Path(__file__).resolve().parents[3] / "tests" / "fixtures" / "home_credit"
 SNAPSHOT_ID = "snap-001"
 INGESTED = datetime(2026, 7, 23, 12, 0, 0, tzinfo=UTC)
@@ -33,6 +27,7 @@ def _populated_manifest() -> tuple[Path, Path]:
         (data_dir / f).write_text((FIXTURES / f).read_text())
     manifest_path = Path(tmp) / "manifest.yaml"
     import yaml
+
     manifest = {
         "dataset": "home_credit",
         "files": [
@@ -44,6 +39,7 @@ def _populated_manifest() -> tuple[Path, Path]:
     with open(manifest_path, "w") as f:
         yaml.safe_dump(manifest, f)
     from case_studies.home_credit.scripts.validate_manifest import populate_manifest
+
     ok = populate_manifest(data_dir, manifest_path)
     assert ok, "populate failed"
     return manifest_path, data_dir
@@ -66,7 +62,6 @@ def adapter(config, manifest_path_and_data_dir):
 
 
 class TestAdapterClosure:
-
     def test_validate_adapter_passes(self, adapter):
         assert adapter.validate_adapter() == []
 
@@ -81,11 +76,13 @@ class TestAdapterClosure:
         assert adapter.label_time_column() == "__proxy_label_time__"
 
     def test_define_prediction_boundary(self, adapter):
-        pp = adapter.define_prediction_boundary({
-            "__source_table__": "application_train",
-            "SK_ID_CURR": 100001,
-            "TARGET": 0,
-        })
+        pp = adapter.define_prediction_boundary(
+            {
+                "__source_table__": "application_train",
+                "SK_ID_CURR": 100001,
+                "TARGET": 0,
+            }
+        )
         assert pp.entity_id == "SK_ID_CURR:100001"
         assert pp.snapshot_id == SNAPSHOT_ID
         assert pp.boundary_version == "hc-boundary-v1"
@@ -93,14 +90,19 @@ class TestAdapterClosure:
     def test_all_abstract_members(self, adapter):
         for attr in ["dataset_id", "display_name", "adapter_version"]:
             getattr(adapter, attr)
-        for method in ["define_prediction_boundary", "prediction_time_column",
-                       "label_column", "label_time_column", "generate_events",
-                       "build_feature_catalog", "semantic_group_mapping"]:
+        for method in [
+            "define_prediction_boundary",
+            "prediction_time_column",
+            "label_column",
+            "label_time_column",
+            "generate_events",
+            "build_feature_catalog",
+            "semantic_group_mapping",
+        ]:
             getattr(adapter, method)
 
 
 class TestConstructor:
-
     def test_rejects_empty_snapshot(self, config, manifest_path_and_data_dir):
         mf, data_dir = manifest_path_and_data_dir
         with pytest.raises(ContractValidationError):
@@ -118,6 +120,7 @@ class TestConstructor:
     def test_rejects_null_manifest(self, config):
         p, data_dir = _populated_manifest()
         import yaml
+
         # Overwrite with null metadata
         data = yaml.safe_load(p.read_text())
         for f in data["files"]:
@@ -132,10 +135,11 @@ class TestConstructor:
     def test_rejects_non_utc_ingested(self, config, manifest_path_and_data_dir):
         mf, data_dir = manifest_path_and_data_dir
         from datetime import timedelta
+
         with pytest.raises(ContractValidationError, match="UTC"):
-            HomeCreditAdapter(SNAPSHOT_ID, mf, data_dir,
-                              datetime(2026, 1, 1, tzinfo=timezone(timedelta(hours=10))),
-                              config)
+            HomeCreditAdapter(
+                SNAPSHOT_ID, mf, data_dir, datetime(2026, 1, 1, tzinfo=timezone(timedelta(hours=10))), config
+            )
 
     def test_rejects_ingested_before_prediction(self, config, manifest_path_and_data_dir):
         mf, data_dir = manifest_path_and_data_dir
@@ -148,16 +152,19 @@ class TestConstructor:
             HomeCreditAdapter(SNAPSHOT_ID, mf, data_dir, INGESTED, None)
 
     def test_source_system_is_honored(self, adapter):
-        events = list(adapter.generate_events(
-            {"__source_table__": "application_train", "SK_ID_CURR": 100001, "TARGET": 0},
-            source_system="bronze.home_credit",
-        ))
+        events = list(
+            adapter.generate_events(
+                {"__source_table__": "application_train", "SK_ID_CURR": 100001, "TARGET": 0},
+                source_system="bronze.home_credit",
+            )
+        )
         assert events[0].source_system == "bronze.home_credit"
 
     def test_rejects_empty_manifest(self, config):
         import tempfile
 
         import yaml
+
         with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as f:
             yaml.safe_dump({"dataset": "home_credit", "files": []}, f)
             path = Path(f.name)
@@ -170,6 +177,7 @@ class TestConstructor:
     def test_rejects_missing_required_file_in_manifest(self, config, manifest_path_and_data_dir):
         mf, data_dir = manifest_path_and_data_dir
         import yaml
+
         data = yaml.safe_load(mf.read_text())
         data["files"] = [f for f in data["files"] if f["name"] != "bureau.csv"]
         p2 = mf.with_name("no_bureau.yaml")
@@ -180,18 +188,21 @@ class TestConstructor:
 
 
 class TestPredictionBoundaryGuard:
-
     def test_rejects_application_test_with_target(self, adapter):
         with pytest.raises(ContractValidationError, match="application_train"):
-            adapter.define_prediction_boundary({
-                "__source_table__": "application_test",
-                "SK_ID_CURR": 100001,
-                "TARGET": 0,
-            })
+            adapter.define_prediction_boundary(
+                {
+                    "__source_table__": "application_test",
+                    "SK_ID_CURR": 100001,
+                    "TARGET": 0,
+                }
+            )
 
     def test_rejects_no_target(self, adapter):
         with pytest.raises(ContractValidationError, match="TARGET"):
-            adapter.define_prediction_boundary({
-                "__source_table__": "application_train",
-                "SK_ID_CURR": 100001,
-            })
+            adapter.define_prediction_boundary(
+                {
+                    "__source_table__": "application_train",
+                    "SK_ID_CURR": 100001,
+                }
+            )

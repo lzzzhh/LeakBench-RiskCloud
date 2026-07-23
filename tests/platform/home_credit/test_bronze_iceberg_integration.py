@@ -21,19 +21,12 @@ pytestmark = [
     # PySpark 3.5.3 local socket readers may leave raw socket
     # cleanup to garbage collection. Filter restricted to
     # socket.socket unraisable/resource warnings in this module.
-    pytest.mark.filterwarnings(
-        r"ignore:.*socket\.socket.*:pytest.PytestUnraisableExceptionWarning"
-    ),
-    pytest.mark.filterwarnings(
-        r"ignore:.*socket\.socket.*:ResourceWarning"
-    ),
+    pytest.mark.filterwarnings(r"ignore:.*socket\.socket.*:pytest.PytestUnraisableExceptionWarning"),
+    pytest.mark.filterwarnings(r"ignore:.*socket\.socket.*:ResourceWarning"),
 ]
 
 FIXTURES = Path(__file__).resolve().parents[3] / "tests" / "fixtures" / "home_credit"
-CONFIG_PATH = (
-    Path(__file__).resolve().parents[3]
-    / "case_studies" / "home_credit" / "configs" / "bronze_v1.yaml"
-)
+CONFIG_PATH = Path(__file__).resolve().parents[3] / "case_studies" / "home_credit" / "configs" / "bronze_v1.yaml"
 REQUIRED_FILES = ["application_train.csv", "bureau.csv", "bureau_balance.csv"]
 
 _ALLOWED_SPARK_SHUTDOWN = (ConnectionResetError, ConnectionRefusedError, BrokenPipeError, EOFError)
@@ -41,6 +34,7 @@ _ALLOWED_SPARK_SHUTDOWN = (ConnectionResetError, ConnectionRefusedError, BrokenP
 
 def _is_known_shutdown_noise(error: BaseException) -> bool:
     import errno
+
     if isinstance(error, _ALLOWED_SPARK_SHUTDOWN):
         return True
     if isinstance(error, OSError):
@@ -50,6 +44,7 @@ def _is_known_shutdown_noise(error: BaseException) -> bool:
 
 def _flatten_exc_group(exc: BaseException) -> list[BaseException]:
     import builtins
+
     group_type = getattr(builtins, "BaseExceptionGroup", None)
     if group_type is not None and isinstance(exc, group_type):
         leaves: list[BaseException] = []
@@ -82,6 +77,7 @@ def _populate_existing_manifest(data_dir: Path, manifest_path: Path) -> str:
     }
     manifest_path.write_text(yaml.safe_dump(manifest), encoding="utf-8")
     from case_studies.home_credit.scripts.validate_manifest import populate_manifest
+
     ok = populate_manifest(data_dir, manifest_path)
     assert ok, "populate failed"
     return _sha256(manifest_path.read_bytes())
@@ -90,6 +86,7 @@ def _populate_existing_manifest(data_dir: Path, manifest_path: Path) -> str:
 # -----------------------------------------------------------------
 # Module fixture — shared Spark session for all tests
 # -----------------------------------------------------------------
+
 
 @pytest.fixture(scope="module")
 def module_setup():
@@ -107,13 +104,17 @@ def module_setup():
 
     primary_error = None
     try:
-        receipt = ingest_bronze(config, data_dir, manifest_path,
-                                Path(tmp) / "receipts", "p12-a",
-                                git_commit="test", spark=spark)
+        receipt = ingest_bronze(
+            config, data_dir, manifest_path, Path(tmp) / "receipts", "p12-a", git_commit="test", spark=spark
+        )
         yield {
-            "data_dir": data_dir, "manifest_path": manifest_path,
-            "warehouse": warehouse, "manifest_sha": manifest_sha,
-            "config": config, "receipt": receipt, "spark": spark,
+            "data_dir": data_dir,
+            "manifest_path": manifest_path,
+            "warehouse": warehouse,
+            "manifest_sha": manifest_sha,
+            "config": config,
+            "receipt": receipt,
+            "spark": spark,
             "receipt_dir": Path(tmp) / "receipts",
         }
     except BaseException as exc:
@@ -121,6 +122,7 @@ def module_setup():
         raise
     finally:
         import gc
+
         gc.collect()
         try:
             _stop_test_spark(spark)
@@ -137,8 +139,8 @@ def module_setup():
 # Basic
 # -----------------------------------------------------------------
 
-class TestBasicWrite:
 
+class TestBasicWrite:
     def test_receipt_complete(self, module_setup):
         assert module_setup["receipt"]["receipt"]["status"] == "COMPLETE"
 
@@ -171,8 +173,8 @@ class TestBasicWrite:
 
     def test_source_columns_string(self, module_setup):
         from pyspark.sql.types import StringType
-        for tn in ["riskcloud.bronze.application_train", "riskcloud.bronze.bureau",
-                   "riskcloud.bronze.bureau_balance"]:
+
+        for tn in ["riskcloud.bronze.application_train", "riskcloud.bronze.bureau", "riskcloud.bronze.bureau_balance"]:
             for fld in module_setup["spark"].table(tn).schema.fields:
                 if not fld.name.startswith("_"):
                     assert isinstance(fld.dataType, StringType), f"{tn}.{fld.name}"
@@ -182,13 +184,17 @@ class TestBasicWrite:
 # Rerun
 # -----------------------------------------------------------------
 
-class TestRerun:
 
+class TestRerun:
     def test_same_manifest_rerun(self, module_setup):
         receipt2 = ingest_bronze(
-            module_setup["config"], module_setup["data_dir"], module_setup["manifest_path"],
-            Path(tempfile.mkdtemp()) / "receipts", "p12-rerun",
-            git_commit="test", spark=module_setup["spark"],
+            module_setup["config"],
+            module_setup["data_dir"],
+            module_setup["manifest_path"],
+            Path(tempfile.mkdtemp()) / "receipts",
+            "p12-rerun",
+            git_commit="test",
+            spark=module_setup["spark"],
         )
         for tbl_name in ["application_train", "bureau", "bureau_balance"]:
             t1 = module_setup["receipt"]["tables"][tbl_name]
@@ -202,8 +208,8 @@ class TestRerun:
 # Different manifest
 # -----------------------------------------------------------------
 
-class TestDifferentManifest:
 
+class TestDifferentManifest:
     def test_manifest_b_preserves_a_partition(self, module_setup):
         tmp = tempfile.mkdtemp()
         data_dir_b = Path(tmp) / "data"
@@ -217,9 +223,13 @@ class TestDifferentManifest:
         assert manifest_sha_b != module_setup["manifest_sha"]
 
         receipt_b = ingest_bronze(
-            module_setup["config"], data_dir_b, manifest_b,
-            Path(tmp) / "receipts", "p12-b",
-            git_commit="test", spark=module_setup["spark"],
+            module_setup["config"],
+            data_dir_b,
+            manifest_b,
+            Path(tmp) / "receipts",
+            "p12-b",
+            git_commit="test",
+            spark=module_setup["spark"],
         )
 
         assert receipt_b["input"]["source_snapshot_id"] != module_setup["receipt"]["input"]["source_snapshot_id"]
@@ -229,8 +239,10 @@ class TestDifferentManifest:
         assert tb["content_multiset_sha256"] != ta["content_multiset_sha256"]
 
         for tbl_name in ["bureau", "bureau_balance"]:
-            assert receipt_b["tables"][tbl_name]["content_multiset_sha256"] == \
-                   module_setup["receipt"]["tables"][tbl_name]["content_multiset_sha256"]
+            assert (
+                receipt_b["tables"][tbl_name]["content_multiset_sha256"]
+                == module_setup["receipt"]["tables"][tbl_name]["content_multiset_sha256"]
+            )
 
         spark = module_setup["spark"]
         for tbl_key, tbl_name in [
@@ -239,12 +251,10 @@ class TestDifferentManifest:
             ("bureau_balance", "riskcloud.bronze.bureau_balance"),
         ]:
             count_a = spark.sql(
-                f"SELECT COUNT(*) FROM {tbl_name} "
-                f"WHERE _source_manifest_sha256 = '{module_setup['manifest_sha']}'"
+                f"SELECT COUNT(*) FROM {tbl_name} WHERE _source_manifest_sha256 = '{module_setup['manifest_sha']}'"
             ).collect()[0][0]
             count_b = spark.sql(
-                f"SELECT COUNT(*) FROM {tbl_name} "
-                f"WHERE _source_manifest_sha256 = '{manifest_sha_b}'"
+                f"SELECT COUNT(*) FROM {tbl_name} WHERE _source_manifest_sha256 = '{manifest_sha_b}'"
             ).collect()[0][0]
             assert count_a == module_setup["receipt"]["tables"][tbl_key]["source_row_count"]
             assert count_b == receipt_b["tables"][tbl_key]["source_row_count"]
@@ -254,8 +264,8 @@ class TestDifferentManifest:
 # Publication and metadata gate
 # -----------------------------------------------------------------
 
-class TestPublicationGate:
 
+class TestPublicationGate:
     def test_runtime_metadata_and_disk_publication(self, module_setup):
         receipt = module_setup["receipt"]
         for tres in receipt["tables"].values():

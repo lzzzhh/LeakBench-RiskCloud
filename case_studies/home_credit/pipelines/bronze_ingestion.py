@@ -348,8 +348,16 @@ def ingest_bronze(
         primary_error = exc
         try:
             _write_failure_artifact(
-                receipt_dir, run_id, manifest_sha, manifest_path,
-                data_dir, git_commit, config, completed_tables, current_table, exc,
+                receipt_dir,
+                run_id,
+                manifest_sha,
+                manifest_path,
+                data_dir,
+                git_commit,
+                config,
+                completed_tables,
+                current_table,
+                exc,
             )
         except BaseException as artifact_err:
             # Don't mask the original error
@@ -469,9 +477,7 @@ def _ingest_one_table(
     # Current snapshot and metadata via Iceberg Java API
     try:
         jvm = spark._jvm
-        jtable = jvm.org.apache.iceberg.spark.Spark3Util.loadIcebergTable(
-            spark._jsparkSession, table_name
-        )
+        jtable = jvm.org.apache.iceberg.spark.Spark3Util.loadIcebergTable(spark._jsparkSession, table_name)
         if jtable is None:
             raise RuntimeError(f"{table_name}: Spark3Util returned null")
         jtable.refresh()
@@ -491,9 +497,7 @@ def _ingest_one_table(
         try:
             has_ops_cls = cl.loadClass("org.apache.iceberg.HasTableOperations")
         except Exception as exc:
-            raise RuntimeError(
-                f"{table_name}: failed to load HasTableOperations via {cl_str}: {exc}"
-            ) from exc
+            raise RuntimeError(f"{table_name}: failed to load HasTableOperations via {cl_str}: {exc}") from exc
         if not has_ops_cls.isAssignableFrom(jtable.getClass()):
             raise RuntimeError(f"{table_name}: {cls_name} does not implement HasTableOperations")
 
@@ -508,13 +512,10 @@ def _ingest_one_table(
 
         # Cross-validate snapshot IDs
         if java_snapshot_id != snapshot_id:
-            raise RuntimeError(
-                f"{table_name}: Java snapshot {java_snapshot_id} != SQL snapshot {snapshot_id}"
-            )
+            raise RuntimeError(f"{table_name}: Java snapshot {java_snapshot_id} != SQL snapshot {snapshot_id}")
         if metadata_snap.snapshotId() != snapshot_id:
             raise RuntimeError(
-                f"{table_name}: TableMetadata snapshot {metadata_snap.snapshotId()} "
-                f"!= committed snapshot {snapshot_id}"
+                f"{table_name}: TableMetadata snapshot {metadata_snap.snapshotId()} != committed snapshot {snapshot_id}"
             )
 
         metadata_location = current_meta.metadataFileLocation()

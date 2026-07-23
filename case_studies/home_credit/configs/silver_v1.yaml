@@ -1,0 +1,68 @@
+# Silver V1 ingestion configuration
+# See docs/adr/0004-silver-standardization.md
+
+silver:
+  version: hc-silver-v1
+  catalog: riskcloud
+  namespace: silver
+  partition_field: _source_manifest_sha256
+  write_mode: overwrite_partitions
+
+# Bronze → dependency
+bronze:
+  receipt_must_be_complete: true
+  tables:
+    application_train: riskcloud.bronze.application_train
+    bureau: riskcloud.bronze.bureau
+    bureau_balance: riskcloud.bronze.bureau_balance
+
+# Silver output tables
+tables:
+  application_train:
+    table: riskcloud.silver.application_train
+    primary_key: SK_ID_CURR
+    type_mapping:
+      SK_ID_CURR: INT
+      TARGET: INT
+      AMT_INCOME_TOTAL: DOUBLE
+      AMT_CREDIT: DOUBLE
+      AMT_ANNUITY: DOUBLE
+      AMT_GOODS_PRICE: DOUBLE
+      CNT_CHILDREN: INT
+      DAYS_BIRTH: INT
+      DAYS_EMPLOYED: INT
+      FLAG_OWN_CAR: INT
+      FLAG_OWN_REALTY: INT
+
+  bureau:
+    table: riskcloud.silver.bureau
+    primary_key: SK_ID_BUREAU
+    foreign_key: SK_ID_CURR
+    type_mapping:
+      SK_ID_CURR: INT
+      SK_ID_BUREAU: INT
+      DAYS_CREDIT: INT
+      CREDIT_DAY_OVERDUE: INT
+      DAYS_CREDIT_ENDDATE: INT
+      AMT_CREDIT_MAX_OVERDUE: DOUBLE
+      AMT_CREDIT_SUM: DOUBLE
+      AMT_CREDIT_SUM_DEBT: DOUBLE
+      AMT_CREDIT_SUM_OVERDUE: DOUBLE
+      CNT_CREDIT_PROLONG: INT
+
+  bureau_balance:
+    table: riskcloud.silver.bureau_balance
+    primary_key:
+      - SK_ID_BUREAU
+      - MONTHS_BALANCE
+    foreign_key: SK_ID_CURR
+    enrichment:
+      source: bureau
+      join_key: SK_ID_BUREAU
+      add_columns:
+        - SK_ID_CURR
+    type_mapping:
+      SK_ID_BUREAU: INT
+      SK_ID_CURR: INT
+      MONTHS_BALANCE: INT
+      STATUS: STRING

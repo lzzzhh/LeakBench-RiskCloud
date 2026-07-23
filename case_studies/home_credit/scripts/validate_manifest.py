@@ -44,6 +44,7 @@ REQUIRED_META = ("row_count", "columns", "sha256", "header_sha256")
 # Helpers
 # -----------------------------------------------------------------
 
+
 def _sha256(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
@@ -84,6 +85,7 @@ def _column_names(path: Path) -> list[str]:
 # -----------------------------------------------------------------
 # Manifest structure validation
 # -----------------------------------------------------------------
+
 
 def _validate_manifest_structure(manifest: dict) -> list[str]:
     """Validate manifest shape. Returns list of error messages."""
@@ -138,6 +140,7 @@ def _validate_manifest_structure(manifest: dict) -> list[str]:
 # -----------------------------------------------------------------
 # Main validation
 # -----------------------------------------------------------------
+
 
 def validate_manifest(
     data_dir: Path,
@@ -231,6 +234,7 @@ def validate_manifest(
 # -----------------------------------------------------------------
 # Populate
 # -----------------------------------------------------------------
+
 
 def populate_manifest(
     data_dir: Path,
@@ -336,12 +340,12 @@ def populate_manifest(
 # CLI
 # -----------------------------------------------------------------
 
+
 def main():
     parser = argparse.ArgumentParser(description="Validate Home Credit data manifest")
     parser.add_argument("--data-dir", required=True, help="Path to directory containing Home Credit CSVs")
     parser.add_argument("--manifest", default=None, help="Path to manifest YAML (default: repo manifest)")
-    parser.add_argument("--populate", action="store_true",
-                        help="Populate SHA-256 and row counts, then validate")
+    parser.add_argument("--populate", action="store_true", help="Populate SHA-256 and row counts, then validate")
     args = parser.parse_args()
 
     data_dir = Path(args.data_dir)

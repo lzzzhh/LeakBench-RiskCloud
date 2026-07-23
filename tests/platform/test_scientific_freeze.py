@@ -17,14 +17,15 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 # 1. Freeze lock
 # -----------------------------------------------------------------
 
-class TestFreezeLock:
 
+class TestFreezeLock:
     def test_freeze_lock_exists(self):
         lock = REPO_ROOT / "scientific-freeze.lock"
         assert lock.exists(), "scientific-freeze.lock not found"
 
     def test_freeze_lock_valid_structure(self):
         import yaml
+
         lock = REPO_ROOT / "scientific-freeze.lock"
         data = yaml.safe_load(lock.read_text())
         assert "upstream" in data
@@ -38,6 +39,7 @@ class TestFreezeLock:
     def test_freeze_verification_runs(self):
         """Freeze verification must return valid=True when upstream is unchanged."""
         from riskcloud.freeze import FreezeResult, verify_freeze
+
         lock = REPO_ROOT / "scientific-freeze.lock"
         result = verify_freeze(lock)
         assert isinstance(result, FreezeResult)
@@ -48,13 +50,14 @@ class TestFreezeLock:
 # 2. Documentation
 # -----------------------------------------------------------------
 
-class TestDocumentation:
 
+class TestDocumentation:
     def test_contracts_have_docstrings(self):
         import riskcloud.contracts.document as doc
         import riskcloud.contracts.event as evt
         import riskcloud.contracts.feature_catalog as fc
         import riskcloud.contracts.prediction_point as pp
+
         for mod, cls_name in [
             (evt, "Event"),
             (pp, "PredictionPoint"),
@@ -81,8 +84,8 @@ class TestDocumentation:
 # 3. Directory structure
 # -----------------------------------------------------------------
 
-class TestDirectoryStructure:
 
+class TestDirectoryStructure:
     def test_package_structure(self):
         assert (REPO_ROOT / "riskcloud").is_dir()
         assert (REPO_ROOT / "riskcloud" / "contracts").is_dir()

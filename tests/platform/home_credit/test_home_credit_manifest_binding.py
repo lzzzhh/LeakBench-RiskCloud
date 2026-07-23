@@ -24,7 +24,6 @@ FIXTURES = Path(__file__).resolve().parents[3] / "tests" / "fixtures" / "home_cr
 
 
 class TestFieldMapping:
-
     def test_normalize_id_int(self):
         assert normalize_id(100001) == "100001"
 
@@ -75,18 +74,21 @@ class TestFieldMapping:
     def test_raw_bureau_balance_columns_are_three(self):
         """Raw bureau_balance.csv has 3 columns (no SK_ID_CURR)."""
         from riskcloud.adapters.home_credit.field_mapping import RAW_REQUIRED_COLUMNS
+
         assert len(RAW_REQUIRED_COLUMNS["bureau_balance.csv"]) == 3
         assert "SK_ID_CURR" not in RAW_REQUIRED_COLUMNS["bureau_balance.csv"]
 
     def test_event_bureau_balance_columns_are_four(self):
         """Enriched bureau_balance event record requires 4 columns (with SK_ID_CURR)."""
         from riskcloud.adapters.home_credit.field_mapping import BUREAU_BALANCE_EVENT_COLUMNS
+
         assert len(BUREAU_BALANCE_EVENT_COLUMNS) == 4
         assert "SK_ID_CURR" in BUREAU_BALANCE_EVENT_COLUMNS
 
     def test_raw_fixture_bureau_balance_has_three_columns(self):
         """The raw fixture CSV must have 3 columns, not 4."""
         import csv
+
         fixture = FIXTURES / "bureau_balance.csv"
         with open(fixture, newline="") as f:
             reader = csv.reader(f)

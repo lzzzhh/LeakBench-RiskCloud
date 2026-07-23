@@ -16,13 +16,7 @@ from riskcloud.adapters.home_credit.boundary import (
 from riskcloud.contracts.prediction_point import Split
 
 UTC = timezone.utc
-CONFIG_PATH = (
-    Path(__file__).resolve().parents[3]
-    / "case_studies"
-    / "home_credit"
-    / "configs"
-    / "boundary_v1.yaml"
-)
+CONFIG_PATH = Path(__file__).resolve().parents[3] / "case_studies" / "home_credit" / "configs" / "boundary_v1.yaml"
 
 
 @pytest.fixture
@@ -36,7 +30,6 @@ def snapshot_id():
 
 
 class TestBoundaryConfig:
-
     def test_config_loads(self, config):
         assert config.boundary_version == "hc-boundary-v1"
         assert config.label_maturity_days == 365
@@ -47,58 +40,77 @@ class TestBoundaryConfig:
     def test_config_rejects_equal_thresholds(self):
         with pytest.raises(ValueError, match="thresholds"):
             HomeCreditBoundaryConfig(
-                boundary_version="v1", boundary_type="synthetic_proxy",
+                boundary_version="v1",
+                boundary_type="synthetic_proxy",
                 prediction_anchor=datetime(2000, 1, 1, tzinfo=UTC),
                 label_maturity_days=365,
                 split_policy="deterministic_hash_proxy_holdout",
-                split_seed=1, split_modulus=100,
-                train_upper=50, validation_upper=50, oot_upper=100,
-                oot_is_calendar_time=False, application_test_supervised=False,
+                split_seed=1,
+                split_modulus=100,
+                train_upper=50,
+                validation_upper=50,
+                oot_upper=100,
+                oot_is_calendar_time=False,
+                application_test_supervised=False,
                 available_at_rule="application_snapshot_time",
             )
 
     def test_config_rejects_non_utc(self):
         with pytest.raises(ValueError, match="UTC"):
             HomeCreditBoundaryConfig(
-                boundary_version="v1", boundary_type="synthetic_proxy",
+                boundary_version="v1",
+                boundary_type="synthetic_proxy",
                 prediction_anchor=datetime(2000, 1, 1, tzinfo=timezone(timedelta(hours=10))),
                 label_maturity_days=365,
                 split_policy="deterministic_hash_proxy_holdout",
-                split_seed=1, split_modulus=100,
-                train_upper=30, validation_upper=60, oot_upper=100,
-                oot_is_calendar_time=False, application_test_supervised=False,
+                split_seed=1,
+                split_modulus=100,
+                train_upper=30,
+                validation_upper=60,
+                oot_upper=100,
+                oot_is_calendar_time=False,
+                application_test_supervised=False,
                 available_at_rule="application_snapshot_time",
             )
 
     def test_config_rejects_non_aware(self):
         with pytest.raises(ValueError):
             HomeCreditBoundaryConfig(
-                boundary_version="v1", boundary_type="synthetic_proxy",
+                boundary_version="v1",
+                boundary_type="synthetic_proxy",
                 prediction_anchor=datetime(2000, 1, 1),
                 label_maturity_days=365,
                 split_policy="deterministic_hash_proxy_holdout",
-                split_seed=1, split_modulus=100,
-                train_upper=30, validation_upper=60, oot_upper=100,
-                oot_is_calendar_time=False, application_test_supervised=False,
+                split_seed=1,
+                split_modulus=100,
+                train_upper=30,
+                validation_upper=60,
+                oot_upper=100,
+                oot_is_calendar_time=False,
+                application_test_supervised=False,
                 available_at_rule="application_snapshot_time",
             )
 
     def test_config_rejects_zero_train(self):
         with pytest.raises(ValueError, match="thresholds"):
             HomeCreditBoundaryConfig(
-                boundary_version="v1", boundary_type="synthetic_proxy",
+                boundary_version="v1",
+                boundary_type="synthetic_proxy",
                 prediction_anchor=datetime(2000, 1, 1, tzinfo=UTC),
                 label_maturity_days=365,
                 split_policy="deterministic_hash_proxy_holdout",
-                split_seed=1, split_modulus=100,
-                train_upper=0, validation_upper=50, oot_upper=100,
-                oot_is_calendar_time=False, application_test_supervised=False,
+                split_seed=1,
+                split_modulus=100,
+                train_upper=0,
+                validation_upper=50,
+                oot_upper=100,
+                oot_is_calendar_time=False,
+                application_test_supervised=False,
                 available_at_rule="application_snapshot_time",
             )
 
 
 class TestSplit:
-
     def test_split_is_deterministic(self):
         b1 = _compute_split("SK_ID_CURR:123", 20260723, 10000)
         b2 = _compute_split("SK_ID_CURR:123", 20260723, 10000)
@@ -124,6 +136,7 @@ class TestSplit:
     def test_golden_split_vector(self, config):
         """Golden split vectors frozen in V1. Change indicates split logic drift."""
         from riskcloud.adapters.home_credit.boundary import _compute_split, assign_split
+
         # These are computed once and frozen — do not regenerate
         golden = {
             "SK_ID_CURR:100001": "train",
@@ -139,18 +152,19 @@ class TestSplit:
     def test_golden_prediction_id(self, snapshot_id, config):
         """Golden prediction_id for a fixed entity+snapshot+boundary combination."""
         pp = build_prediction_point(
-            {"SK_ID_CURR": 100001, "TARGET": 0}, snapshot_id, config,
+            {"SK_ID_CURR": 100001, "TARGET": 0},
+            snapshot_id,
+            config,
         )
-        assert pp.prediction_id == (
-            "525b42bfb254fd02fbdcec363c671e5765042a7d0ff521c7b81b24731f86b615"
-        )
+        assert pp.prediction_id == ("525b42bfb254fd02fbdcec363c671e5765042a7d0ff521c7b81b24731f86b615")
 
 
 class TestPredictionPoint:
-
     def test_valid_point(self, config, snapshot_id):
         pp = build_prediction_point(
-            {"SK_ID_CURR": 100001, "TARGET": 0}, snapshot_id, config,
+            {"SK_ID_CURR": 100001, "TARGET": 0},
+            snapshot_id,
+            config,
         )
         assert pp.entity_id == "SK_ID_CURR:100001"
         assert pp.label == 0.0
@@ -192,12 +206,17 @@ class TestPredictionPoint:
     def test_boundary_rejects_bool_as_int(self):
         with pytest.raises(ValueError, match="bool"):
             HomeCreditBoundaryConfig(
-                boundary_version="v1", boundary_type="synthetic_proxy",
+                boundary_version="v1",
+                boundary_type="synthetic_proxy",
                 prediction_anchor=datetime(2000, 1, 1, tzinfo=UTC),
                 label_maturity_days=True,  # bool
                 split_policy="deterministic_hash_proxy_holdout",
-                split_seed=1, split_modulus=100,
-                train_upper=30, validation_upper=60, oot_upper=100,
-                oot_is_calendar_time=False, application_test_supervised=False,
+                split_seed=1,
+                split_modulus=100,
+                train_upper=30,
+                validation_upper=60,
+                oot_upper=100,
+                oot_is_calendar_time=False,
+                application_test_supervised=False,
                 available_at_rule="application_snapshot_time",
             )

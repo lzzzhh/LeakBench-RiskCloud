@@ -35,9 +35,7 @@ ICEBERG_VERSION = "1.6.1"
 SCALA_BINARY = "2.12"
 SPARK_MAJOR = "3.5"
 
-ICEBERG_RUNTIME = (
-    f"org.apache.iceberg:iceberg-spark-runtime-{SPARK_MAJOR}_{SCALA_BINARY}:{ICEBERG_VERSION}"
-)
+ICEBERG_RUNTIME = f"org.apache.iceberg:iceberg-spark-runtime-{SPARK_MAJOR}_{SCALA_BINARY}:{ICEBERG_VERSION}"
 
 # Warehouse location
 _WAREHOUSE = os.environ.get(
@@ -51,6 +49,7 @@ CATALOG = "riskcloud"
 # -----------------------------------------------------------------
 # Spark session
 # -----------------------------------------------------------------
+
 
 def get_spark(
     app_name: str = "riskcloud-home-credit",
@@ -67,8 +66,7 @@ def get_spark(
     Path(warehouse_path).mkdir(parents=True, exist_ok=True)
 
     builder = (
-        SparkSession.builder
-        .appName(app_name)
+        SparkSession.builder.appName(app_name)
         .master("local[*]")
         # Iceberg catalog
         .config("spark.sql.extensions", "org.apache.iceberg.spark.extensions.IcebergSparkSessionExtensions")
@@ -97,6 +95,7 @@ def get_spark(
 # Namespaces
 # -----------------------------------------------------------------
 
+
 def setup_namespaces(spark: SparkSession) -> None:
     """Create the standard Iceberg namespaces."""
     for ns in ("bronze", "silver", "gold", "audit"):
@@ -106,6 +105,7 @@ def setup_namespaces(spark: SparkSession) -> None:
 # -----------------------------------------------------------------
 # Smoke test (creates → writes → reads → snapshot → cleans up)
 # -----------------------------------------------------------------
+
 
 def smoke_test(spark: SparkSession) -> bool:
     """Run a create-insert-read-snapshot smoke test. Returns True on pass."""
@@ -149,6 +149,7 @@ def smoke_test(spark: SparkSession) -> bool:
 # -----------------------------------------------------------------
 # CLI
 # -----------------------------------------------------------------
+
 
 def main() -> int:
     """Run the full smoke test with a temporary warehouse."""
