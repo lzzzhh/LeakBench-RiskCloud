@@ -57,7 +57,7 @@ class TestFieldMapping:
         assert bureau_id(500) == "SK_ID_BUREAU:500"
 
     def test_constants(self):
-        assert APPLICATION_TABLE == "application_train"
-        assert BUREAU_TABLE == "bureau"
-        assert BUREAU_BALANCE_TABLE == "bureau_balance"
+        assert APPLICATION_TABLE == "application_train.csv"
+        assert BUREAU_TABLE == "bureau.csv"
+        assert BUREAU_BALANCE_TABLE == "bureau_balance.csv"
         assert SOURCE_TABLE_FIELD == "__source_table__"

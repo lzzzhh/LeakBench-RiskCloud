@@ -80,7 +80,7 @@ class TestAdapterClosure:
 
     def test_define_prediction_boundary(self, adapter):
         pp = adapter.define_prediction_boundary({
-            "__source_table__": "application_train",
+            "__source_table__": "application_train.csv",
             "SK_ID_CURR": 100001,
             "TARGET": 0,
         })
@@ -140,6 +140,36 @@ class TestConstructor:
         with pytest.raises(ContractValidationError):
             HomeCreditAdapter(SNAPSHOT_ID, manifest_path, INGESTED, None)
 
+    def test_source_system_is_honored(self, adapter):
+        events = list(adapter.generate_events(
+            {"__source_table__": "application_train.csv", "SK_ID_CURR": 100001, "TARGET": 0},
+            source_system="bronze.home_credit",
+        ))
+        assert events[0].source_system == "bronze.home_credit"
+
+    def test_rejects_empty_manifest(self, config):
+        import tempfile
+
+        import yaml
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as f:
+            yaml.safe_dump({"files": []}, f)
+            path = Path(f.name)
+        try:
+            with pytest.raises(ContractValidationError):
+                HomeCreditAdapter(SNAPSHOT_ID, path, INGESTED, config)
+        finally:
+            path.unlink()
+
+    def test_rejects_missing_required_file_in_manifest(self, config, manifest_path):
+        import yaml
+        data = yaml.safe_load(manifest_path.read_text())
+        data["files"] = [f for f in data["files"] if f["name"] != "bureau.csv"]
+        p2 = manifest_path.with_name("no_bureau.yaml")
+        with open(p2, "w") as fp:
+            yaml.safe_dump(data, fp)
+        with pytest.raises(ContractValidationError, match="bureau"):
+            HomeCreditAdapter(SNAPSHOT_ID, p2, INGESTED, config)
+
 
 class TestPredictionBoundaryGuard:
 
@@ -154,6 +184,6 @@ class TestPredictionBoundaryGuard:
     def test_rejects_no_target(self, adapter):
         with pytest.raises(ContractValidationError, match="TARGET"):
             adapter.define_prediction_boundary({
-                "__source_table__": "application_train",
+                "__source_table__": "application_train.csv",
                 "SK_ID_CURR": 100001,
             })

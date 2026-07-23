@@ -35,18 +35,13 @@ from riskcloud.adapters.home_credit.boundary import HomeCreditBoundaryConfig
 config = HomeCreditBoundaryConfig.from_yaml("case_studies/home_credit/configs/boundary_v1.yaml")
 adapter = HomeCreditAdapter(
     snapshot_id="snap-001",
-    source_manifest_sha256="<64-char hex>",
+    manifest_path=Path("case_studies/home_credit/manifests/data_manifest.yaml"),
     ingested_at=datetime.now(timezone.utc),
     boundary_config=config,
 )
 
 # Validate closure
 assert adapter.validate_adapter() == []
-
-# Generate events
-for record in records:
-    for event in adapter.generate_events(record):
-        print(event.event_id)
 ```
 
 ### Directory Layout

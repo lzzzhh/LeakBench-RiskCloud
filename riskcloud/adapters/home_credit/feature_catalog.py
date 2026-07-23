@@ -27,8 +27,12 @@ FEATURES: list[FeatureCatalogEntry] = [
         leakage_risk=LeakageRisk.NONE,
         semantic_group_id="application_affordability",
         cost_unit=1.0,
-        lineage_expression="AMT_CREDIT / AMT_INCOME_TOTAL",
-        description="Ratio of loan amount to declared income",
+        lineage_expression=(
+            "CASE WHEN AMT_INCOME_TOTAL IS NULL OR AMT_INCOME_TOTAL=0 "
+            "OR AMT_CREDIT IS NULL THEN NULL "
+            "ELSE AMT_CREDIT / AMT_INCOME_TOTAL END"
+        ),
+        description="Ratio of loan amount to declared income (null if denominator zero/missing)",
     ),
     FeatureCatalogEntry(
         feature_id="app.annuity_income_ratio",
@@ -44,8 +48,12 @@ FEATURES: list[FeatureCatalogEntry] = [
         leakage_risk=LeakageRisk.NONE,
         semantic_group_id="application_affordability",
         cost_unit=1.0,
-        lineage_expression="AMT_ANNUITY / AMT_INCOME_TOTAL",
-        description="Ratio of loan annuity to declared income",
+        lineage_expression=(
+            "CASE WHEN AMT_INCOME_TOTAL IS NULL OR AMT_INCOME_TOTAL=0 "
+            "OR AMT_ANNUITY IS NULL THEN NULL "
+            "ELSE AMT_ANNUITY / AMT_INCOME_TOTAL END"
+        ),
+        description="Ratio of loan annuity to declared income (null if denominator zero/missing)",
     ),
     FeatureCatalogEntry(
         feature_id="app.credit_annuity_ratio",
@@ -61,8 +69,12 @@ FEATURES: list[FeatureCatalogEntry] = [
         leakage_risk=LeakageRisk.NONE,
         semantic_group_id="application_affordability",
         cost_unit=1.0,
-        lineage_expression="AMT_CREDIT / AMT_ANNUITY",
-        description="Ratio of loan amount to loan annuity",
+        lineage_expression=(
+            "CASE WHEN AMT_ANNUITY IS NULL OR AMT_ANNUITY=0 "
+            "OR AMT_CREDIT IS NULL THEN NULL "
+            "ELSE AMT_CREDIT / AMT_ANNUITY END"
+        ),
+        description="Ratio of loan amount to loan annuity (null if denominator zero/missing)",
     ),
     FeatureCatalogEntry(
         feature_id="app.goods_credit_ratio",
@@ -78,8 +90,12 @@ FEATURES: list[FeatureCatalogEntry] = [
         leakage_risk=LeakageRisk.NONE,
         semantic_group_id="application_affordability",
         cost_unit=1.0,
-        lineage_expression="AMT_GOODS_PRICE / AMT_CREDIT",
-        description="Ratio of goods price to loan amount",
+        lineage_expression=(
+            "CASE WHEN AMT_CREDIT IS NULL OR AMT_CREDIT=0 "
+            "OR AMT_GOODS_PRICE IS NULL THEN NULL "
+            "ELSE AMT_GOODS_PRICE / AMT_CREDIT END"
+        ),
+        description="Ratio of goods price to loan amount (null if denominator zero/missing)",
     ),
     FeatureCatalogEntry(
         feature_id="app.age_years",
@@ -112,8 +128,15 @@ FEATURES: list[FeatureCatalogEntry] = [
         leakage_risk=LeakageRisk.NONE,
         semantic_group_id="application_external_scores",
         cost_unit=1.0,
-        lineage_expression="mean(EXT_SOURCE_1, EXT_SOURCE_2, EXT_SOURCE_3)",
-        description="Mean of available external credit scores",
+        lineage_expression=(
+            "(COALESCE(EXT_SOURCE_1,EXT_SOURCE_2,EXT_SOURCE_3)+"
+            "COALESCE(EXT_SOURCE_2,EXT_SOURCE_3,EXT_SOURCE_1)+"
+            "COALESCE(EXT_SOURCE_3,EXT_SOURCE_1,EXT_SOURCE_2))"
+            "/NULLIF((CASE WHEN EXT_SOURCE_1 IS NOT NULL THEN 1 ELSE 0 END+"
+            "CASE WHEN EXT_SOURCE_2 IS NOT NULL THEN 1 ELSE 0 END+"
+            "CASE WHEN EXT_SOURCE_3 IS NOT NULL THEN 1 ELSE 0 END),0)"
+        ),
+        description="Mean of available external credit scores (null if all three missing)",
     ),
     FeatureCatalogEntry(
         feature_id="app.ext_source_missing_count",
@@ -129,8 +152,12 @@ FEATURES: list[FeatureCatalogEntry] = [
         leakage_risk=LeakageRisk.NONE,
         semantic_group_id="application_external_scores",
         cost_unit=1.0,
-        lineage_expression="count_null(EXT_SOURCE_1, EXT_SOURCE_2, EXT_SOURCE_3)",
-        description="Number of missing external credit scores",
+        lineage_expression=(
+            "CASE WHEN EXT_SOURCE_1 IS NULL THEN 1 ELSE 0 END + "
+            "CASE WHEN EXT_SOURCE_2 IS NULL THEN 1 ELSE 0 END + "
+            "CASE WHEN EXT_SOURCE_3 IS NULL THEN 1 ELSE 0 END"
+        ),
+        description="Number of missing external credit scores (0-3)",
     ),
     FeatureCatalogEntry(
         feature_id="app.document_flag_count",
@@ -146,8 +173,8 @@ FEATURES: list[FeatureCatalogEntry] = [
         leakage_risk=LeakageRisk.NONE,
         semantic_group_id="application_documents",
         cost_unit=1.0,
-        lineage_expression="sum(FLAG_DOCUMENT_*)",
-        description="Sum of document submission flags",
+        lineage_expression="FLAG_DOCUMENT_2+FLAG_DOCUMENT_3+FLAG_DOCUMENT_4+FLAG_DOCUMENT_5+FLAG_DOCUMENT_6+FLAG_DOCUMENT_7+FLAG_DOCUMENT_8+FLAG_DOCUMENT_9+FLAG_DOCUMENT_10+FLAG_DOCUMENT_11+FLAG_DOCUMENT_12+FLAG_DOCUMENT_13+FLAG_DOCUMENT_14+FLAG_DOCUMENT_15+FLAG_DOCUMENT_16+FLAG_DOCUMENT_17+FLAG_DOCUMENT_18+FLAG_DOCUMENT_19+FLAG_DOCUMENT_20+FLAG_DOCUMENT_21",
+        description="Sum of document submission flags (FLAG_DOCUMENT_2 through FLAG_DOCUMENT_21)",
     ),
     # ---- Bureau ----
     FeatureCatalogEntry(
@@ -358,11 +385,11 @@ FEATURES: list[FeatureCatalogEntry] = [
         semantic_group_id="bureau_delinquency_history",
         cost_unit=1.0,
         lineage_expression=(
-            "SELECT STATUS FROM (SELECT STATUS, MONTHS_BALANCE FROM bureau_balance "
-            "WHERE MONTHS_BALANCE <= 0 ORDER BY MONTHS_BALANCE DESC, SK_ID_BUREAU ASC "
-            "LIMIT 1) t WHERE STATUS IN ('1','2','3','4','5') → 1 ELSE 0"
+            "SELECT CASE WHEN STATUS IN ('1','2','3','4','5') THEN 1 ELSE 0 END "
+            "FROM bureau_balance WHERE SK_ID_CURR=t.SK_ID_CURR AND MONTHS_BALANCE<=0 "
+            "ORDER BY MONTHS_BALANCE DESC, SK_ID_BUREAU ASC LIMIT 1"
         ),
-        description="Whether the most recent month (deterministic tiebreak) shows delinquency",
+        description="Whether the most recent month per applicant shows delinquency",
     ),
 ]
 

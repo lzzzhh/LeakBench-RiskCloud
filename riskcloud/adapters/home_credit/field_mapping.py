@@ -8,9 +8,9 @@ from __future__ import annotations
 
 SOURCE_TABLE_FIELD = "__source_table__"
 
-APPLICATION_TABLE = "application_train"
-BUREAU_TABLE = "bureau"
-BUREAU_BALANCE_TABLE = "bureau_balance"
+APPLICATION_TABLE = "application_train.csv"
+BUREAU_TABLE = "bureau.csv"
+BUREAU_BALANCE_TABLE = "bureau_balance.csv"
 
 APPLICATION_EVENT_COLUMNS = {"SK_ID_CURR", "TARGET"}
 BUREAU_EVENT_COLUMNS = {"SK_ID_CURR", "SK_ID_BUREAU", "DAYS_CREDIT"}

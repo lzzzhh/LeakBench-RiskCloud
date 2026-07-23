@@ -122,15 +122,28 @@ class TestSplit:
         assert s == Split.OOT
 
     def test_golden_split_vector(self, config):
-        """Fixed entities produce deterministic splits."""
-        buckets = {}
-        for sk in [100001, 100002, 100003, 100004, 100005]:
-            bucket = _compute_split(f"SK_ID_CURR:{sk}", config.split_seed, config.split_modulus)
-            buckets[sk] = bucket
-        # Verify determinism: same input → same output
-        for sk in buckets:
-            assert _compute_split(f"SK_ID_CURR:{sk}", config.split_seed, config.split_modulus) == buckets[sk]
-        assert len(set(buckets.values())) >= 1, "All buckets are identical — split may be degenerate"
+        """Golden split vectors frozen in V1. Change indicates split logic drift."""
+        from riskcloud.adapters.home_credit.boundary import _compute_split, assign_split
+        # These are computed once and frozen — do not regenerate
+        golden = {
+            "SK_ID_CURR:100001": "train",
+            "SK_ID_CURR:100002": "oot",
+            "SK_ID_CURR:100008": "validation",
+            "SK_ID_CURR:100050": "validation",
+        }
+        for entity_id, expected_split in golden.items():
+            bucket = _compute_split(entity_id, config.split_seed, config.split_modulus)
+            actual = assign_split(bucket, config).value
+            assert actual == expected_split, f"{entity_id}: expected {expected_split}, got {actual}"
+
+    def test_golden_prediction_id(self, snapshot_id, config):
+        """Golden prediction_id for a fixed entity+snapshot+boundary combination."""
+        pp = build_prediction_point(
+            {"SK_ID_CURR": 100001, "TARGET": 0}, snapshot_id, config,
+        )
+        assert pp.prediction_id == (
+            "525b42bfb254fd02fbdcec363c671e5765042a7d0ff521c7b81b24731f86b615"
+        )
 
 
 class TestPredictionPoint:
@@ -165,3 +178,26 @@ class TestPredictionPoint:
     def test_label_only_0_or_1(self, config, snapshot_id):
         with pytest.raises(ValueError):
             build_prediction_point({"SK_ID_CURR": 1, "TARGET": 0.5}, snapshot_id, config)
+
+    def test_label_rejects_bool(self, config, snapshot_id):
+        with pytest.raises(ValueError):
+            build_prediction_point({"SK_ID_CURR": 1, "TARGET": True}, snapshot_id, config)
+
+    def test_label_accepts_string_0_1(self, config, snapshot_id):
+        pp0 = build_prediction_point({"SK_ID_CURR": 1, "TARGET": "0"}, snapshot_id, config)
+        assert pp0.label == 0.0
+        pp1 = build_prediction_point({"SK_ID_CURR": 1, "TARGET": "1"}, snapshot_id, config)
+        assert pp1.label == 1.0
+
+    def test_boundary_rejects_bool_as_int(self):
+        with pytest.raises(ValueError, match="bool"):
+            HomeCreditBoundaryConfig(
+                boundary_version="v1", boundary_type="synthetic_proxy",
+                prediction_anchor=datetime(2000, 1, 1, tzinfo=UTC),
+                label_maturity_days=True,  # bool
+                split_policy="deterministic_hash_proxy_holdout",
+                split_seed=1, split_modulus=100,
+                train_upper=30, validation_upper=60, oot_upper=100,
+                oot_is_calendar_time=False, application_test_supervised=False,
+                available_at_rule="application_snapshot_time",
+            )

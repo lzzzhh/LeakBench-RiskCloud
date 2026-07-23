@@ -65,7 +65,7 @@ class TestApplicationEvent:
 
     def test_valid(self, adapter):
         events = list(adapter.generate_events({
-            "__source_table__": "application_train",
+            "__source_table__": "application_train.csv",
             "SK_ID_CURR": 100001,
             "TARGET": 0,
         }))
@@ -74,7 +74,7 @@ class TestApplicationEvent:
 
     def test_strict_roundtrip(self, adapter):
         events = list(adapter.generate_events({
-            "__source_table__": "application_train",
+            "__source_table__": "application_train.csv",
             "SK_ID_CURR": 100001,
             "TARGET": 0,
         }))
@@ -84,7 +84,7 @@ class TestApplicationEvent:
 
     def test_event_time_le_available_at(self, adapter):
         events = list(adapter.generate_events({
-            "__source_table__": "application_train",
+            "__source_table__": "application_train.csv",
             "SK_ID_CURR": 100001,
             "TARGET": 0,
         }))
@@ -92,14 +92,14 @@ class TestApplicationEvent:
 
     def test_missing_sk_id_curr(self, adapter):
         with pytest.raises(ContractValidationError):
-            list(adapter.generate_events({"__source_table__": "application_train", "TARGET": 0}))
+            list(adapter.generate_events({"__source_table__": "application_train.csv", "TARGET": 0}))
 
 
 class TestBureauEvent:
 
     def test_valid(self, adapter):
         events = list(adapter.generate_events({
-            "__source_table__": "bureau",
+            "__source_table__": "bureau.csv",
             "SK_ID_CURR": 100001,
             "SK_ID_BUREAU": 500,
             "DAYS_CREDIT": -365,
@@ -108,7 +108,7 @@ class TestBureauEvent:
 
     def test_strict_roundtrip(self, adapter):
         events = list(adapter.generate_events({
-            "__source_table__": "bureau",
+            "__source_table__": "bureau.csv",
             "SK_ID_CURR": 100001,
             "SK_ID_BUREAU": 500,
             "DAYS_CREDIT": -365,
@@ -120,7 +120,7 @@ class TestBureauEvent:
     def test_rejects_positive_days(self, adapter):
         with pytest.raises(ContractValidationError):
             list(adapter.generate_events({
-                "__source_table__": "bureau",
+                "__source_table__": "bureau.csv",
                 "SK_ID_CURR": 100001,
                 "SK_ID_BUREAU": 500,
                 "DAYS_CREDIT": 10,
@@ -129,7 +129,7 @@ class TestBureauEvent:
     def test_rejects_bool_days(self, adapter):
         with pytest.raises(ContractValidationError, match="bool"):
             list(adapter.generate_events({
-                "__source_table__": "bureau",
+                "__source_table__": "bureau.csv",
                 "SK_ID_CURR": 100001,
                 "SK_ID_BUREAU": 500,
                 "DAYS_CREDIT": True,
@@ -138,7 +138,7 @@ class TestBureauEvent:
     def test_rejects_float_days(self, adapter):
         with pytest.raises(ContractValidationError):
             list(adapter.generate_events({
-                "__source_table__": "bureau",
+                "__source_table__": "bureau.csv",
                 "SK_ID_CURR": 100001,
                 "SK_ID_BUREAU": 500,
                 "DAYS_CREDIT": -365.5,
@@ -149,7 +149,7 @@ class TestBureauBalanceEvent:
 
     def test_valid(self, adapter):
         events = list(adapter.generate_events({
-            "__source_table__": "bureau_balance",
+            "__source_table__": "bureau_balance.csv",
             "SK_ID_CURR": 100001,
             "SK_ID_BUREAU": 500,
             "MONTHS_BALANCE": -6,
@@ -159,7 +159,7 @@ class TestBureauBalanceEvent:
 
     def test_strict_roundtrip(self, adapter):
         events = list(adapter.generate_events({
-            "__source_table__": "bureau_balance",
+            "__source_table__": "bureau_balance.csv",
             "SK_ID_CURR": 100001,
             "SK_ID_BUREAU": 500,
             "MONTHS_BALANCE": -6,
@@ -172,7 +172,7 @@ class TestBureauBalanceEvent:
     def test_rejects_missing_sk_id_curr(self, adapter):
         with pytest.raises(ContractValidationError):
             list(adapter.generate_events({
-                "__source_table__": "bureau_balance",
+                "__source_table__": "bureau_balance.csv",
                 "SK_ID_BUREAU": 500,
                 "MONTHS_BALANCE": -6,
                 "STATUS": "C",
@@ -181,7 +181,7 @@ class TestBureauBalanceEvent:
     def test_rejects_positive_months(self, adapter):
         with pytest.raises(ContractValidationError):
             list(adapter.generate_events({
-                "__source_table__": "bureau_balance",
+                "__source_table__": "bureau_balance.csv",
                 "SK_ID_CURR": 100001,
                 "SK_ID_BUREAU": 500,
                 "MONTHS_BALANCE": 3,
@@ -191,7 +191,7 @@ class TestBureauBalanceEvent:
     def test_rejects_bool_months(self, adapter):
         with pytest.raises(ContractValidationError, match="bool"):
             list(adapter.generate_events({
-                "__source_table__": "bureau_balance",
+                "__source_table__": "bureau_balance.csv",
                 "SK_ID_CURR": 100001,
                 "SK_ID_BUREAU": 500,
                 "MONTHS_BALANCE": False,
@@ -201,7 +201,7 @@ class TestBureauBalanceEvent:
     def test_rejects_float_months(self, adapter):
         with pytest.raises(ContractValidationError):
             list(adapter.generate_events({
-                "__source_table__": "bureau_balance",
+                "__source_table__": "bureau_balance.csv",
                 "SK_ID_CURR": 100001,
                 "SK_ID_BUREAU": 500,
                 "MONTHS_BALANCE": -6.8,
@@ -212,7 +212,7 @@ class TestBureauBalanceEvent:
 class TestEventIdentity:
 
     def test_same_input_same_id(self, adapter):
-        rec = {"__source_table__": "application_train", "SK_ID_CURR": 100001, "TARGET": 0}
+        rec = {"__source_table__": "application_train.csv", "SK_ID_CURR": 100001, "TARGET": 0}
         e1 = list(adapter.generate_events(rec))[0]
         e2 = list(adapter.generate_events(rec))[0]
         assert e1.event_id == e2.event_id
@@ -221,7 +221,9 @@ class TestEventIdentity:
         import yaml
         mf_path = _populated_manifest()
         a1 = HomeCreditAdapter(SNAPSHOT_ID, mf_path, INGESTED, config)
-        e1 = list(a1.generate_events({"__source_table__": "application_train", "SK_ID_CURR": 100001, "TARGET": 0}))[0]
+        e1 = list(a1.generate_events(
+            {"__source_table__": "application_train.csv", "SK_ID_CURR": 100001, "TARGET": 0},
+        ))[0]
 
         # Modify manifest content → different SHA → different event identity
         manifest = yaml.safe_load(mf_path.read_text())
@@ -232,7 +234,9 @@ class TestEventIdentity:
         with open(mf2_path, "w") as f2:
             yaml.safe_dump(manifest, f2)
         a2 = HomeCreditAdapter(SNAPSHOT_ID, mf2_path, INGESTED, config)
-        e2 = list(a2.generate_events({"__source_table__": "application_train", "SK_ID_CURR": 100001, "TARGET": 0}))[0]
+        e2 = list(a2.generate_events(
+            {"__source_table__": "application_train.csv", "SK_ID_CURR": 100001, "TARGET": 0},
+        ))[0]
 
         assert e1.event_id != e2.event_id
 
@@ -268,7 +272,7 @@ class TestAdapterClosure:
     def test_prediction_boundary_rejects_no_target(self, adapter):
         with pytest.raises(ContractValidationError, match="TARGET"):
             adapter.define_prediction_boundary({
-                "__source_table__": "application_train",
+                "__source_table__": "application_train.csv",
                 "SK_ID_CURR": 100001,
             })
 
@@ -296,7 +300,7 @@ class TestConstructor:
             ]}, f)
             path = Path(f.name)
         try:
-            with pytest.raises(ContractValidationError, match="null"):
+            with pytest.raises(ContractValidationError, match="bureau"):
                 HomeCreditAdapter(SNAPSHOT_ID, path, INGESTED, config)
         finally:
             path.unlink()

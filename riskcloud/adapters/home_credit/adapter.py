@@ -1,13 +1,14 @@
 """Home Credit Dataset Adapter — P1.1.
 
-All events use Event.parse() and PredictionPoint.parse() (strict contract entries).
-All temporal fields validated. Manifest SHA must match the actual manifest file.
+All events use Event.parse() and PredictionPoint.parse().
+Manifest must pass the full P1.0 validator contract.
 """
 
 from __future__ import annotations
 
+import hashlib
 from collections.abc import Generator
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -23,8 +24,11 @@ from riskcloud.adapters.home_credit.feature_catalog import (
     get_semantic_group_mapping,
 )
 from riskcloud.adapters.home_credit.field_mapping import (
+    APPLICATION_EVENT_COLUMNS,
     APPLICATION_TABLE,
+    BUREAU_BALANCE_EVENT_COLUMNS,
     BUREAU_BALANCE_TABLE,
+    BUREAU_EVENT_COLUMNS,
     BUREAU_TABLE,
     SOURCE_TABLE_FIELD,
     application_id,
@@ -36,16 +40,88 @@ from riskcloud.contracts.feature_catalog import FeatureCatalogEntry
 from riskcloud.contracts.prediction_point import PredictionPoint
 from riskcloud.contracts.validation import ContractValidationError, FieldError
 
+UTC = timezone.utc
 
-def _compute_sha256_file(path: Path) -> str:
-    import hashlib
-    h = hashlib.sha256()
-    h.update(path.read_bytes())
-    return h.hexdigest()
+_REQUIRED_FILES = {APPLICATION_TABLE, BUREAU_TABLE, BUREAU_BALANCE_TABLE}
+_REQUIRED_COLUMNS = {
+    APPLICATION_TABLE: APPLICATION_EVENT_COLUMNS,
+    BUREAU_TABLE: BUREAU_EVENT_COLUMNS,
+    BUREAU_BALANCE_TABLE: BUREAU_BALANCE_EVENT_COLUMNS,
+}
+_REQUIRED_META = ("sha256", "header_sha256", "row_count", "columns")
+
+
+def _validate_manifest(path: Path) -> str:
+    """Validate manifest against P1.0 contract. Returns manifest SHA-256."""
+    if not path.is_file():
+        raise ContractValidationError([FieldError("manifest_path", f"not found: {path}")])
+
+    raw = path.read_bytes()
+    manifest_sha = hashlib.sha256(raw).hexdigest()
+
+    try:
+        manifest = yaml.safe_load(raw)
+    except Exception as exc:
+        raise ContractValidationError([FieldError("manifest_path", f"invalid YAML: {exc}")]) from exc
+
+    if not isinstance(manifest, dict):
+        raise ContractValidationError([FieldError("manifest_path", "must be a YAML dict")])
+
+    files = manifest.get("files")
+    if not isinstance(files, list) or len(files) == 0:
+        raise ContractValidationError([FieldError("manifest_path", "files must be a non-empty list")])
+
+    seen: set[str] = set()
+    for i, fspec in enumerate(files):
+        if not isinstance(fspec, dict):
+            raise ContractValidationError([FieldError(f"manifest_path.files[{i}]", "must be a dict")])
+        name = fspec.get("name")
+        if not isinstance(name, str) or not name.strip():
+            raise ContractValidationError([FieldError(f"manifest_path.files[{i}]", "name must be non-empty str")])
+        seen.add(name)
+
+    for rf in _REQUIRED_FILES:
+        if rf not in seen:
+            raise ContractValidationError([FieldError("manifest_path", f"required file missing: {rf}")])
+
+    for fspec in files:
+        name = fspec.get("name", "")
+        if name not in _REQUIRED_FILES:
+            continue
+        required = fspec.get("required")
+        if required is not True:
+            raise ContractValidationError([FieldError(f"manifest_path.{name}", "must have required: true")])
+        for meta_field in _REQUIRED_META:
+            val = fspec.get(meta_field)
+            if val is None:
+                raise ContractValidationError([
+                    FieldError(f"manifest_path.{name}", f"{meta_field} is null — run --populate first"),
+                ])
+        sha = fspec.get("sha256")
+        if not isinstance(sha, str) or len(sha) != 64:
+            raise ContractValidationError([FieldError(f"manifest_path.{name}.sha256", "must be 64 hex chars")])
+        hsha = fspec.get("header_sha256")
+        if not isinstance(hsha, str) or len(hsha) != 64:
+            raise ContractValidationError([FieldError(f"manifest_path.{name}.header_sha256", "must be 64 hex chars")])
+        rc = fspec.get("row_count")
+        if not isinstance(rc, int) or rc < 0:
+            raise ContractValidationError([FieldError(f"manifest_path.{name}.row_count", "must be non-negative int")])
+        cols = fspec.get("columns")
+        if not isinstance(cols, int) or cols < 1:
+            raise ContractValidationError([FieldError(f"manifest_path.{name}.columns", "must be positive int")])
+        min_cols = len(_REQUIRED_COLUMNS.get(name, set()))
+        if cols < min_cols:
+            raise ContractValidationError([
+                FieldError(
+                    f"manifest_path.{name}.columns",
+                    f"requires >= {min_cols} columns for {_REQUIRED_COLUMNS[name]}",
+                ),
+            ])
+
+    return manifest_sha
 
 
 def _validate_strict_int(value: object, field: str) -> int:
-    """Accept only int (not bool, not float)."""
     if isinstance(value, bool):
         raise ContractValidationError([FieldError(field, "must be int, not bool", value)])
     if not isinstance(value, int):
@@ -54,16 +130,51 @@ def _validate_strict_int(value: object, field: str) -> int:
 
 
 def _calendar_month_shift(dt: datetime, months: int) -> datetime:
-    """Shift a datetime by N calendar months. Clips day-of-month if needed."""
     if months == 0:
         return dt
-    total_months = dt.year * 12 + (dt.month - 1) + months
-    new_year = total_months // 12
-    new_month = (total_months % 12) + 1
     import calendar
+    total = dt.year * 12 + (dt.month - 1) + months
+    new_year, new_month = divmod(total, 12)
+    new_month += 1
     max_day = calendar.monthrange(new_year, new_month)[1]
-    new_day = min(dt.day, max_day)
-    return dt.replace(year=new_year, month=new_month, day=new_day)
+    return dt.replace(year=new_year, month=new_month, day=min(dt.day, max_day))
+
+
+def _build_event_dict(
+    dataset_id: str, entity_id: str, customer_id: str,
+    event_type: str, event_time: datetime, available_at: datetime,
+    ingested_at: datetime, source_system: str,
+    source_record_id: str, source_record_revision: str,
+    snapshot_id: str, adapter_version: str, boundary_version: str,
+    source_table: str,
+) -> dict[str, Any]:
+    event_id = compute_event_id(
+        dataset_id, EntityType.LOAN_APPLICATION, entity_id,
+        EventType(event_type), event_time,
+        source_record_id=source_record_id,
+        source_record_revision=source_record_revision,
+    )
+    return {
+        "dataset_id": dataset_id,
+        "event_id": event_id,
+        "entity_type": "loan_application",
+        "entity_id": entity_id,
+        "customer_id": customer_id,
+        "event_type": event_type,
+        "event_time": event_time.isoformat(),
+        "available_at": available_at.isoformat(),
+        "ingested_at": ingested_at.isoformat(),
+        "source_system": source_system,
+        "source_record_id": source_record_id,
+        "source_record_revision": source_record_revision,
+        "headers": {
+            "snapshot_id": snapshot_id,
+            "adapter_version": adapter_version,
+            "boundary_version": boundary_version,
+            "source_table": source_table,
+            "availability_semantics": "application_snapshot",
+        },
+    }
 
 
 class HomeCreditAdapter(Adapter):
@@ -75,27 +186,11 @@ class HomeCreditAdapter(Adapter):
         ingested_at: datetime,
         boundary_config: HomeCreditBoundaryConfig,
     ):
-        # snapshot_id
         if not isinstance(snapshot_id, str) or not snapshot_id.strip():
             raise ContractValidationError([FieldError("snapshot_id", "must be non-empty string")])
 
-        # manifest_path: must exist, be populated, compute SHA
-        if not manifest_path.is_file():
-            raise ContractValidationError([FieldError("manifest_path", f"not found: {manifest_path}")])
-        self._manifest_sha = _compute_sha256_file(manifest_path)
+        self._manifest_sha = _validate_manifest(manifest_path)
 
-        # Verify manifest is populated
-        with open(manifest_path) as f:
-            manifest_data = yaml.safe_load(f)
-        for fspec in manifest_data.get("files", []):
-            if fspec.get("required"):
-                for field in ("sha256", "row_count", "columns"):
-                    if fspec.get(field) is None:
-                        raise ContractValidationError([
-                            FieldError("manifest_path", f"{fspec['name']}.{field} is null — run --populate first"),
-                        ])
-
-        # ingested_at: UTC and >= prediction anchor
         if not isinstance(ingested_at, datetime):
             raise ContractValidationError([FieldError("ingested_at", "must be datetime")])
         if ingested_at.tzinfo is None:
@@ -103,7 +198,6 @@ class HomeCreditAdapter(Adapter):
         if ingested_at.utcoffset() != timedelta(0):
             raise ContractValidationError([FieldError("ingested_at", "must be UTC (offset 0)")])
 
-        # boundary_config
         if not isinstance(boundary_config, HomeCreditBoundaryConfig):
             raise ContractValidationError([
                 FieldError(
@@ -111,17 +205,12 @@ class HomeCreditAdapter(Adapter):
                     f"must be HomeCreditBoundaryConfig, got {type(boundary_config).__name__}",
                 ),
             ])
-
         if ingested_at < boundary_config.prediction_anchor:
-            raise ContractValidationError([
-                FieldError("ingested_at", "must be >= prediction_anchor"),
-            ])
+            raise ContractValidationError([FieldError("ingested_at", "must be >= prediction_anchor")])
 
         self._snapshot_id = snapshot_id
         self._ingested_at = ingested_at
         self._boundary = boundary_config
-
-    # -- identity ------------------------------------------------------
 
     @property
     def dataset_id(self) -> str:
@@ -135,20 +224,16 @@ class HomeCreditAdapter(Adapter):
     def adapter_version(self) -> str:
         return "1.0.0"
 
-    # -- prediction boundary --------------------------------------------
-
     def define_prediction_boundary(self, raw_record: dict[str, Any]) -> PredictionPoint:
         table = raw_record.get(SOURCE_TABLE_FIELD)
         if table != APPLICATION_TABLE:
             raise ContractValidationError([
                 FieldError(SOURCE_TABLE_FIELD, f"prediction boundary requires {APPLICATION_TABLE}, got {table!r}"),
             ])
-        target = raw_record.get("TARGET")
-        if target is None:
-            raise ContractValidationError([
-                FieldError("TARGET", "missing — prediction boundary requires labeled application_train records"),
-            ])
-        return build_prediction_point(raw_record, self._snapshot_id, self._boundary)
+        try:
+            return build_prediction_point(raw_record, self._snapshot_id, self._boundary)
+        except ValueError as exc:
+            raise ContractValidationError([FieldError("prediction_point", str(exc))]) from exc
 
     def prediction_time_column(self) -> str:
         return "__proxy_application_time__"
@@ -159,163 +244,104 @@ class HomeCreditAdapter(Adapter):
     def label_time_column(self) -> str | None:
         return "__proxy_label_time__"
 
-    # -- event generation -----------------------------------------------
-
     def generate_events(
         self, raw_record: dict[str, Any], source_system: str = ""
     ) -> Generator[Event, None, None]:
         table = raw_record.get(SOURCE_TABLE_FIELD)
         if table is None:
-            raise ContractValidationError([
-                FieldError(SOURCE_TABLE_FIELD, "record must have __source_table__"),
-            ])
+            raise ContractValidationError([FieldError(SOURCE_TABLE_FIELD, "record must have __source_table__")])
+        source = source_system or "home_credit_adapter"
 
-        if table == APPLICATION_TABLE:
-            yield self._application_event(raw_record)
-        elif table == BUREAU_TABLE:
-            yield self._bureau_event(raw_record)
-        elif table == BUREAU_BALANCE_TABLE:
-            yield self._bureau_balance_event(raw_record)
-        else:
-            raise ContractValidationError([
-                FieldError(SOURCE_TABLE_FIELD, f"unknown table: {table}"),
-            ])
+        try:
+            if table == APPLICATION_TABLE:
+                yield self._application_event(raw_record, source)
+            elif table == BUREAU_TABLE:
+                yield self._bureau_event(raw_record, source)
+            elif table == BUREAU_BALANCE_TABLE:
+                yield self._bureau_balance_event(raw_record, source)
+            else:
+                raise ContractValidationError([FieldError(SOURCE_TABLE_FIELD, f"unknown table: {table}")])
+        except ContractValidationError:
+            raise
+        except ValueError as exc:
+            raise ContractValidationError([FieldError(table, str(exc))]) from exc
 
-    def _application_event(self, record: dict[str, Any]) -> Event:
-        sk = record.get("SK_ID_CURR")
-        if sk is None:
-            raise ContractValidationError([FieldError("SK_ID_CURR", "missing")])
-        eid = application_id(sk)
+    def _application_event(self, record: dict[str, Any], source: str) -> Event:
+        for col in APPLICATION_EVENT_COLUMNS:
+            if col not in record:
+                raise ContractValidationError([FieldError(col, f"required column missing in {APPLICATION_TABLE}")])
+        sk = record["SK_ID_CURR"]
+        try:
+            eid = application_id(sk)
+        except ValueError as exc:
+            raise ContractValidationError([FieldError("SK_ID_CURR", str(exc))]) from exc
+
         pt = self._boundary.prediction_anchor
-
-        event_id = compute_event_id(
-            self.dataset_id, EntityType.LOAN_APPLICATION, eid,
-            EventType.LOAN_APPLICATION, pt,
-            source_record_id=f"{APPLICATION_TABLE}:{normalize_id(sk)}",
-            source_record_revision=self._manifest_sha,
+        d = _build_event_dict(
+            self.dataset_id, eid, customer_id(sk),
+            "loan_application", pt, pt, self._ingested_at, source,
+            f"{APPLICATION_TABLE}:{normalize_id(sk)}", self._manifest_sha,
+            self._snapshot_id, self.adapter_version, self._boundary.boundary_version,
+            APPLICATION_TABLE,
         )
-        return Event.parse({
-            "dataset_id": self.dataset_id,
-            "event_id": event_id,
-            "entity_type": "loan_application",
-            "entity_id": eid,
-            "customer_id": customer_id(sk),
-            "event_type": "loan_application",
-            "event_time": pt.isoformat(),
-            "available_at": pt.isoformat(),
-            "ingested_at": self._ingested_at.isoformat(),
-            "source_system": "home_credit_adapter",
-            "source_record_id": f"{APPLICATION_TABLE}:{normalize_id(sk)}",
-            "source_record_revision": self._manifest_sha,
-            "headers": {
-                "snapshot_id": self._snapshot_id,
-                "adapter_version": self.adapter_version,
-                "boundary_version": self._boundary.boundary_version,
-                "source_table": APPLICATION_TABLE,
-                "availability_semantics": "application_snapshot",
-            },
-        })
+        return Event.parse(d)
 
-    def _bureau_event(self, record: dict[str, Any]) -> Event:
-        sk_curr = record.get("SK_ID_CURR")
-        sk_bur = record.get("SK_ID_BUREAU")
-        days_credit = record.get("DAYS_CREDIT")
-
-        if sk_curr is None or sk_bur is None or days_credit is None:
-            raise ContractValidationError([
-                FieldError("bureau", "missing required columns (SK_ID_CURR, SK_ID_BUREAU, DAYS_CREDIT)"),
-            ])
-        days_credit = _validate_strict_int(days_credit, "DAYS_CREDIT")
+    def _bureau_event(self, record: dict[str, Any], source: str) -> Event:
+        for col in BUREAU_EVENT_COLUMNS:
+            if col not in record:
+                raise ContractValidationError([FieldError(col, f"required column missing in {BUREAU_TABLE}")])
+        sk_curr = record["SK_ID_CURR"]
+        sk_bur = record["SK_ID_BUREAU"]
+        days_credit = _validate_strict_int(record["DAYS_CREDIT"], "DAYS_CREDIT")
         if days_credit > 0:
             raise ContractValidationError([FieldError("DAYS_CREDIT", f"must be <= 0, got {days_credit}")])
 
         pt = self._boundary.prediction_anchor
         event_time = pt + timedelta(days=days_credit)
-        eid = application_id(sk_curr)
+        try:
+            eid = application_id(sk_curr)
+        except ValueError as exc:
+            raise ContractValidationError([FieldError("SK_ID_CURR", str(exc))]) from exc
         src_id = f"{BUREAU_TABLE}:{normalize_id(sk_bur)}"
 
-        event_id = compute_event_id(
-            self.dataset_id, EntityType.LOAN_APPLICATION, eid,
-            EventType.BUREAU_SNAPSHOT, event_time,
-            source_record_id=src_id,
-            source_record_revision=self._manifest_sha,
+        d = _build_event_dict(
+            self.dataset_id, eid, customer_id(sk_curr),
+            "bureau_snapshot", event_time, pt, self._ingested_at, source,
+            src_id, self._manifest_sha,
+            self._snapshot_id, self.adapter_version, self._boundary.boundary_version,
+            BUREAU_TABLE,
         )
-        return Event.parse({
-            "dataset_id": self.dataset_id,
-            "event_id": event_id,
-            "entity_type": "loan_application",
-            "entity_id": eid,
-            "customer_id": customer_id(sk_curr),
-            "event_type": "bureau_snapshot",
-            "event_time": event_time.isoformat(),
-            "available_at": pt.isoformat(),
-            "ingested_at": self._ingested_at.isoformat(),
-            "source_system": "home_credit_adapter",
-            "source_record_id": src_id,
-            "source_record_revision": self._manifest_sha,
-            "headers": {
-                "snapshot_id": self._snapshot_id,
-                "adapter_version": self.adapter_version,
-                "boundary_version": self._boundary.boundary_version,
-                "source_table": BUREAU_TABLE,
-                "availability_semantics": "application_snapshot",
-            },
-        })
+        return Event.parse(d)
 
-    def _bureau_balance_event(self, record: dict[str, Any]) -> Event:
-        sk_curr = record.get("SK_ID_CURR")
-        sk_bur = record.get("SK_ID_BUREAU")
-        months = record.get("MONTHS_BALANCE")
-        status = record.get("STATUS")
-
-        if sk_curr is None:
-            raise ContractValidationError([
-                FieldError("SK_ID_CURR", "bureau_balance must be enriched with SK_ID_CURR"),
-            ])
-        if sk_bur is None or months is None or status is None:
-            raise ContractValidationError([
-                FieldError("bureau_balance", "missing required columns (SK_ID_BUREAU, MONTHS_BALANCE, STATUS)"),
-            ])
-        months = _validate_strict_int(months, "MONTHS_BALANCE")
+    def _bureau_balance_event(self, record: dict[str, Any], source: str) -> Event:
+        for col in BUREAU_BALANCE_EVENT_COLUMNS:
+            if col not in record:
+                raise ContractValidationError([FieldError(col, f"required column missing in {BUREAU_BALANCE_TABLE}")])
+        sk_curr = record["SK_ID_CURR"]
+        sk_bur = record["SK_ID_BUREAU"]
+        months = _validate_strict_int(record["MONTHS_BALANCE"], "MONTHS_BALANCE")
         if months > 0:
             raise ContractValidationError([FieldError("MONTHS_BALANCE", f"must be <= 0, got {months}")])
+        status = record["STATUS"]
         if not isinstance(status, str) or not status.strip():
             raise ContractValidationError([FieldError("STATUS", "must be non-empty string")])
 
         pt = self._boundary.prediction_anchor
         event_time = _calendar_month_shift(pt, months)
-        eid = application_id(sk_curr)
+        try:
+            eid = application_id(sk_curr)
+        except ValueError as exc:
+            raise ContractValidationError([FieldError("SK_ID_CURR", str(exc))]) from exc
         src_id = f"{BUREAU_BALANCE_TABLE}:{normalize_id(sk_bur)}:{months}"
 
-        event_id = compute_event_id(
-            self.dataset_id, EntityType.LOAN_APPLICATION, eid,
-            EventType.BUREAU_SNAPSHOT, event_time,
-            source_record_id=src_id,
-            source_record_revision=self._manifest_sha,
+        d = _build_event_dict(
+            self.dataset_id, eid, customer_id(sk_curr),
+            "bureau_snapshot", event_time, pt, self._ingested_at, source,
+            src_id, self._manifest_sha,
+            self._snapshot_id, self.adapter_version, self._boundary.boundary_version,
+            BUREAU_BALANCE_TABLE,
         )
-        return Event.parse({
-            "dataset_id": self.dataset_id,
-            "event_id": event_id,
-            "entity_type": "loan_application",
-            "entity_id": eid,
-            "customer_id": customer_id(sk_curr),
-            "event_type": "bureau_snapshot",
-            "event_time": event_time.isoformat(),
-            "available_at": pt.isoformat(),
-            "ingested_at": self._ingested_at.isoformat(),
-            "source_system": "home_credit_adapter",
-            "source_record_id": src_id,
-            "source_record_revision": self._manifest_sha,
-            "headers": {
-                "snapshot_id": self._snapshot_id,
-                "adapter_version": self.adapter_version,
-                "boundary_version": self._boundary.boundary_version,
-                "source_table": BUREAU_BALANCE_TABLE,
-                "availability_semantics": "application_snapshot",
-            },
-        })
-
-    # -- feature catalog ------------------------------------------------
+        return Event.parse(d)
 
     def build_feature_catalog(self) -> list[FeatureCatalogEntry]:
         return get_features()
