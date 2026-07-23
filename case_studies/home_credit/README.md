@@ -1,6 +1,6 @@
 # Home Credit — Phase 1
 
-## P1.0 — Data Inventory & Execution Skeleton
+## P1.1 — Adapter & Prediction Boundary
 
 ### Compatibility Matrix
 
@@ -12,50 +12,69 @@
 | Java | 17 |
 | Python | >= 3.10 |
 
-### Setup
+### Quick Start
 
 ```bash
-# 1. Download Home Credit data from Kaggle
-#    Place CSVs in a directory, e.g. ~/data/home_credit/
-
-# 2. Populate the data manifest (validates before saving)
+# 1. Populate data manifest
 python case_studies/home_credit/scripts/validate_manifest.py \
-    --data-dir ~/data/home_credit/ \
-    --populate
+    --data-dir ~/data/home_credit/ --populate
 
-# 3. Run the Spark/Iceberg smoke test (requires Java 17)
+# 2. Run Spark/Iceberg smoke test
 python -m case_studies.home_credit.pipelines.spark_env
 
-# 4. Run all tests
+# 3. Run all tests
 python -m pytest tests/ -v
 ```
 
-### Directory Layout (Phase 0 contract compliant)
+### Adapter
+
+```python
+from pathlib import Path
+from datetime import datetime, timezone
+from riskcloud.adapters.home_credit.adapter import HomeCreditAdapter
+from riskcloud.adapters.home_credit.boundary import HomeCreditBoundaryConfig
+
+config = HomeCreditBoundaryConfig.from_yaml("case_studies/home_credit/configs/boundary_v1.yaml")
+adapter = HomeCreditAdapter(
+    snapshot_id="snap-001",
+    manifest_path=Path("case_studies/home_credit/manifests/data_manifest.yaml"),
+    data_dir=Path("~/data/home_credit").expanduser(),
+    ingested_at=datetime.now(timezone.utc),
+    boundary_config=config,
+)
+
+# Validate closure
+assert adapter.validate_adapter() == []
+```
+
+### Directory Layout
 
 ```
-riskcloud/
-├── adapters/
-│   └── home_credit/              # P1.1: Adapter
-│       └── __init__.py
+riskcloud/adapters/home_credit/
+├── __init__.py
+├── adapter.py              # HomeCreditAdapter
+├── boundary.py             # Prediction boundary, split, label
+├── field_mapping.py        # ID normalization, table constants
+└── feature_catalog.py      # 20 features, 6 semantic groups
 
 case_studies/home_credit/
+├── configs/
+│   └── boundary_v1.yaml    # Boundary V1 config
 ├── manifests/
-│   ├── data_manifest.yaml            # Input file inventory (populate with --populate)
-│   └── snapshot_manifest.template.yaml  # Run identity template
+│   ├── data_manifest.yaml
+│   └── snapshot_manifest.template.yaml
 ├── pipelines/
-│   └── spark_env.py                  # SparkSession + Iceberg + smoke test + CLI
-├── scripts/
-│   └── validate_manifest.py          # Manifest validation & population
-└── README.md
+│   └── spark_env.py
+└── scripts/
+    └── validate_manifest.py
 
-tests/
-├── fixtures/home_credit/             # Toy CSVs for unit tests
-├── platform/home_credit/
-│   ├── test_manifest.py
-│   ├── test_p10_skeleton.py
-│   └── test_snapshot_template.py
+docs/adr/
+└── 0002-home-credit-proxy-time-boundary.md
+
+tests/platform/home_credit/
+├── test_home_credit_adapter.py
+├── test_home_credit_boundary.py
+├── test_home_credit_events.py
+├── test_home_credit_feature_catalog.py
+└── test_home_credit_manifest_binding.py
 ```
-
-### First Vertical Slice
-
-Requires: `application_train.csv`, `bureau.csv`, `bureau_balance.csv`
