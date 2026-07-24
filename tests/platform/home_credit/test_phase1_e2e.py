@@ -134,16 +134,40 @@ class TestE2E:
             suffix = r.entity_id.split(":", 1)[1]
             assert suffix.isdigit(), f"Non-numeric suffix: {suffix}"
 
-    def test_bureau_features_computed(self, e2e):
-        """Bureau features must be computed via explicit aggregation."""
+    def test_exact_counts(self, e2e):
+        """Resume MVP: 30 prediction points, 600 feature values, 20 per point."""
         spark = e2e["spark"]
-        expected = {
-            "bureau.record_count", "bureau.active_count", "bureau.closed_count",
-            "bureau.credit_sum_total", "bureau.debt_sum_total", "bureau.overdue_sum_total",
-            "bureau.days_credit_mean", "bureau.recent_12m_count",
-        }
-        for fid in expected:
-            count = spark.sql(
-                f"SELECT COUNT(*) FROM riskcloud.gold.feature_values WHERE feature_id = '{fid}'"
-            ).collect()[0][0]
-            assert count > 0, f"{fid}: not found in feature_values"
+        pp_count = spark.sql("SELECT COUNT(*) FROM riskcloud.gold.prediction_points").collect()[0][0]
+        assert pp_count == 30, f"Expected 30 prediction points, got {pp_count}"
+        fv_count = spark.sql("SELECT COUNT(*) FROM riskcloud.gold.feature_values").collect()[0][0]
+        assert fv_count == 600, f"Expected 600 feature values, got {fv_count}"
+        # Each prediction_id has exactly 20 features
+        counts = spark.sql(
+            "SELECT prediction_id, COUNT(*) as cnt FROM riskcloud.gold.feature_values GROUP BY prediction_id"
+        ).collect()
+        for r in counts:
+            assert r["cnt"] == 20, f"prediction_id {r.prediction_id} has {r['cnt']} features"
+        # No duplicate (prediction_id, feature_id)
+        dupes = spark.sql(
+            "SELECT prediction_id, feature_id, COUNT(*) as cnt FROM riskcloud.gold.feature_values "
+            "GROUP BY prediction_id, feature_id HAVING cnt > 1"
+        ).count()
+        assert dupes == 0, f"Found {dupes} duplicate (prediction_id, feature_id) pairs"
+
+    def test_manifest_sha_non_empty(self, e2e):
+        """_source_manifest_sha256 must not be empty string."""
+        spark = e2e["spark"]
+        empty = spark.sql(
+            "SELECT COUNT(*) FROM riskcloud.gold.feature_values WHERE _source_manifest_sha256 = ''"
+        ).collect()[0][0]
+        assert empty == 0, f"Found {empty} rows with empty manifest SHA"
+
+    def test_max_delinquency_is_max(self, e2e):
+        """bureau_balance.max_delinquency_level must use MAX, not SUM."""
+        spark = e2e["spark"]
+        vals = spark.sql(
+            "SELECT DISTINCT CAST(feature_value AS DOUBLE) as v FROM riskcloud.gold.feature_values "
+            "WHERE feature_id = 'bureau_balance.max_delinquency_level' AND feature_value IS NOT NULL"
+        ).collect()
+        for r in vals:
+            assert r["v"] <= 5.0, f"max_delinquency_level must be <= 5, got {r['v']}"
