@@ -159,24 +159,28 @@ class ApplicationEventPayload:
                                  "AMT_GOODS_PRICE", "DAYS_BIRTH", "EXT_SOURCE_1", "EXT_SOURCE_2",
                                  "EXT_SOURCE_3"} - flag_keys
         if extra:
-            raise ValueError(f"unknown fields: {extra}")
+            errors.append(f"unknown fields: {extra}")
         flags = {}
         for fk in flag_keys:
             v = d.get(fk, 0)
-            if v not in (0, 1, None):
-                raise ValueError(f"{fk} must be 0 or 1, got {v}")
+            if isinstance(v, bool) or v not in (0, 1, None):
+                errors.append(f"{fk} must be 0 or 1, got {v}")
             flags[fk] = v if v is not None else 0
+        amt_income = _validate_optional_float(d, "AMT_INCOME_TOTAL", errors)
+        amt_credit = _validate_optional_float(d, "AMT_CREDIT", errors)
+        amt_annuity = _validate_optional_float(d, "AMT_ANNUITY", errors)
+        amt_goods = _validate_optional_float(d, "AMT_GOODS_PRICE", errors)
+        days_birth = _validate_optional_int(d, "DAYS_BIRTH", errors)
+        es1 = _validate_optional_float(d, "EXT_SOURCE_1", errors)
+        es2 = _validate_optional_float(d, "EXT_SOURCE_2", errors)
+        es3 = _validate_optional_float(d, "EXT_SOURCE_3", errors)
+        if errors:
+            raise ValueError("; ".join(errors))
         return cls(
-            SK_ID_CURR=sk,  # type: ignore[arg-type]
-            AMT_INCOME_TOTAL=_validate_optional_float(d, "AMT_INCOME_TOTAL", errors),
-            AMT_CREDIT=_validate_optional_float(d, "AMT_CREDIT", errors),
-            AMT_ANNUITY=_validate_optional_float(d, "AMT_ANNUITY", errors),
-            AMT_GOODS_PRICE=_validate_optional_float(d, "AMT_GOODS_PRICE", errors),
-            DAYS_BIRTH=_validate_optional_int(d, "DAYS_BIRTH", errors),
-            EXT_SOURCE_1=_validate_optional_float(d, "EXT_SOURCE_1", errors),
-            EXT_SOURCE_2=_validate_optional_float(d, "EXT_SOURCE_2", errors),
-            EXT_SOURCE_3=_validate_optional_float(d, "EXT_SOURCE_3", errors),
-            **{k.replace("FLAG_DOCUMENT_", "FLAG_DOCUMENT_"): v for k, v in flags.items()},  # type: ignore[arg-type]
+            SK_ID_CURR=sk, AMT_INCOME_TOTAL=amt_income, AMT_CREDIT=amt_credit,
+            AMT_ANNUITY=amt_annuity, AMT_GOODS_PRICE=amt_goods, DAYS_BIRTH=days_birth,
+            EXT_SOURCE_1=es1, EXT_SOURCE_2=es2, EXT_SOURCE_3=es3,
+            **{k.replace("FLAG_DOCUMENT_", "FLAG_DOCUMENT_"): v for k, v in flags.items()},
         )
 
 
@@ -347,8 +351,12 @@ class EventEnvelope:
         expected_payload_cls = _EVENT_TYPE_TO_PAYLOAD.get(self.event_type)
         if expected_payload_cls and not isinstance(self.payload, expected_payload_cls):
             errors.append(f"payload type mismatch for {self.event_type.value}")
-        if self.event_id != self.expected_event_id():
-            errors.append("event_id does not match event content")
+        else:
+            try:
+                if self.event_id != self.expected_event_id():
+                    errors.append("event_id does not match event content")
+            except Exception:
+                errors.append("failed to verify event_id integrity")
         return errors
 
     def is_valid(self) -> bool:
@@ -430,6 +438,9 @@ class FeatureUpdate:
             errors.append("event_time timezone-aware")
         if self.computed_at.tzinfo is None:
             errors.append("computed_at timezone-aware")
+        if self.event_time.tzinfo is not None and self.computed_at.tzinfo is not None:
+            if self.computed_at < self.event_time:
+                errors.append("computed_at must be >= event_time")
         if not _EVENT_ID_RE.match(self.source_event_id):
             errors.append("source_event_id format")
         if self.source_topic not in ALL_SOURCE_TOPICS:
@@ -438,8 +449,15 @@ class FeatureUpdate:
             errors.append("feature_value finite or None")
         if not _UPDATE_ID_RE.match(self.feature_update_id):
             errors.append("feature_update_id format")
-        if self.feature_update_id != self.expected_update_id():
-            errors.append("feature_update_id mismatch")
+        if not isinstance(self.computation_mode, ComputationMode):
+            errors.append("computation_mode must be ComputationMode")
+        if not isinstance(self.quality_status, QualityStatus):
+            errors.append("quality_status must be QualityStatus")
+        # Only check integrity if IDs are parseable
+        if (self.feature_id in CATALOG_FEATURE_IDS
+                and self.feature_value is None or math.isfinite(self.feature_value)):
+            if self.feature_update_id != self.expected_update_id():
+                errors.append("feature_update_id mismatch")
         return errors
 
     def is_valid(self) -> bool:

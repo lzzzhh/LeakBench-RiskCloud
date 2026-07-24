@@ -130,6 +130,58 @@ class TestSourcePayloads:
 # =================================================================
 
 
+    # -- payload type errors --
+    def test_app_rejects_string_amount(self):
+        with pytest.raises(ValueError):
+            ApplicationEventPayload.from_dict({"SK_ID_CURR": 1, "AMT_CREDIT": "bad"})
+
+    def test_app_rejects_bool_days_birth(self):
+        with pytest.raises(ValueError):
+            ApplicationEventPayload.from_dict({"SK_ID_CURR": 1, "DAYS_BIRTH": True})
+
+    def test_app_rejects_bool_flag(self):
+        with pytest.raises(ValueError, match="FLAG_DOCUMENT_2"):
+            ApplicationEventPayload.from_dict({"SK_ID_CURR": 1, "FLAG_DOCUMENT_2": True})
+
+    def test_bureau_rejects_bad_days_credit(self):
+        with pytest.raises(ValueError):
+            BureauEventPayload.from_dict({"SK_ID_CURR": 1, "SK_ID_BUREAU": 500, "DAYS_CREDIT": "bad"})
+
+
+class TestFailClosed:
+
+    def test_bad_payload_does_not_crash_validate(self):
+        """EventEnvelope with wrong payload type returns invalid, never crashes."""
+        evt = EventEnvelope(
+            event_id="sha256:" + "a" * 64, schema_version=SCHEMA_VERSION,
+            event_type=EventType.APPLICATION_UPSERT,
+            source_table="application_train", source_pk="1",
+            entity_id="SK_ID_CURR:1", op=Operation.UPSERT,
+            event_time=NOW, produced_at=NOW, payload={},  # type: ignore[arg-type]
+        )
+        result = evt.is_valid()
+        assert isinstance(result, bool)
+
+    def test_full_roundtrip_equality(self):
+        evt = _make_event(EventType.APPLICATION_UPSERT, "application_train", "100001",
+                          "SK_ID_CURR:100001", _app_dict())
+        restored = EventEnvelope.from_json(evt.to_json())
+        assert restored == evt
+
+
+class TestFeatureUpdateValidation:
+
+    def test_rejects_computed_before_event(self):
+        uid = FeatureUpdate.compute_update_id("SK_ID_CURR:1", "bureau.record_count", 1, NOW, 3.0)
+        fu = FeatureUpdate(
+            feature_update_id=uid, entity_id="SK_ID_CURR:1",
+            feature_id="bureau.record_count", feature_value=3.0, feature_version=1,
+            event_time=NOW, computed_at=NOW.replace(year=1999),
+            source_event_id="sha256:" + "a" * 64, source_topic=TOPIC_BUREAU,
+        )
+        assert not fu.is_valid()
+
+
 class TestEventEnvelope:
     def test_valid_app_event(self):
         evt = _make_event(EventType.APPLICATION_UPSERT, "application_train", "100001", "SK_ID_CURR:100001", _app_dict())
