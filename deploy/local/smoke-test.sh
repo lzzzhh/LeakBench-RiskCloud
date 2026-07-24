@@ -68,15 +68,23 @@ print(f'   taskmanagers={d[\"taskmanagers\"]}, slots={d[\"slots-total\"]} OK')
 # 5. Flink checkpoint config via REST
 echo "5. Flink config..."
 config=$(curl -sf http://localhost:8081/jobmanager/config)
-echo "$config" | python3 -c "
-import sys, json
-d = json.load(sys.stdin)
-assert any(x['key'] == 'execution.checkpointing.interval' and x['value'] == '10 s' for x in d), 'checkpoint interval missing'
-assert any(x['key'] == 'execution.checkpointing.mode' and x['value'] == 'EXACTLY_ONCE' for x in d), 'checkpoint mode missing'
-assert any(x['key'] == 'state.checkpoints.dir' and x['value'] == 'file:///data/flink/checkpoints' for x in d), 'checkpoint dir missing'
-assert any(x['key'] == 'state.savepoints.dir' and x['value'] == 'file:///data/flink/savepoints' for x in d), 'savepoint dir missing'
-print('   checkpoint config OK')
-"
+echo "$config" | python3 -c '
+import json, re, sys
+entries = json.load(sys.stdin)
+cfg = {x["key"]: x["value"] for x in entries}
+def ms(v):
+    if v is None: return None
+    m = re.fullmatch(r"([0-9]+)\s*(ms|s|sec|secs|second|seconds)", v.strip().lower())
+    if not m: return None
+    return int(m.group(1)) * (1 if m.group(2) == "ms" else 1000)
+interval = cfg.get("execution.checkpointing.interval")
+print(f"   execution.checkpointing.interval={interval!r} (={ms(interval)}ms)")
+assert ms(interval) == 10000, f"checkpoint interval mismatch: {interval!r}"
+assert cfg.get("execution.checkpointing.mode") == "EXACTLY_ONCE", "checkpoint mode"
+assert cfg.get("state.checkpoints.dir") == "file:///data/flink/checkpoints", "checkpoint dir"
+assert cfg.get("state.savepoints.dir") == "file:///data/flink/savepoints", "savepoint dir"
+print("   checkpoint config OK")
+' 
 
 echo ""
 echo "=== Infrastructure smoke test PASSED ==="
