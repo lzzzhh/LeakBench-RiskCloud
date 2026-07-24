@@ -32,8 +32,8 @@ class TestKafkaTopicSpecs:
 
     def test_init_script_exists(self):
         from pathlib import Path
-        script = Path(__file__).resolve().parents[3] / "deploy" / "local" / "kafka" / "init-topics.sh"
-        assert script.is_file()
+        script = Path(__file__).resolve().parents[2] / "deploy" / "local" / "kafka" / "init-topics.sh"
+        assert script.is_file(), f"Script not found at {script}"
         content = script.read_text()
         for t in TOPIC_SPECS:
             assert t in content, f"Topic {t} not in init-topics.sh"
