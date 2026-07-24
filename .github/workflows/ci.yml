@@ -175,3 +175,31 @@ jobs:
           path: |
             packaging-build.log
             packaging-demo.log
+
+  realtime-infra-smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate Compose config
+        run: |
+          docker compose             --project-directory "$PWD"             -f "$PWD/deploy/local/docker-compose.realtime.yml"             config
+      - name: Start Kafka and Flink
+        run: make realtime-up
+      - name: Run infrastructure smoke
+        run: |
+          mkdir -p realtime-logs
+          set -o pipefail
+          make realtime-smoke 2>&1 | tee realtime-logs/smoke.log
+      - name: Collect logs
+        if: always()
+        run: |
+          mkdir -p realtime-logs
+          docker compose             --project-directory "$PWD"             -f "$PWD/deploy/local/docker-compose.realtime.yml"             logs --no-color             > realtime-logs/compose.log 2>&1 || true
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: realtime-infra-logs
+          path: realtime-logs/
+      - name: Stop infrastructure
+        if: always()
+        run: make realtime-clean
