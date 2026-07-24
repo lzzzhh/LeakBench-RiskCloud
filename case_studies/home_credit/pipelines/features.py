@@ -42,30 +42,109 @@ def compute_features(
     sess = get_spark(app_name=f"riskcloud-feat-{run_id}", warehouse=warehouse) if own_spark else spark
     try:
         setup_namespaces(sess)
-        pp = sess.table(inp["prediction_points"])
+        pp_df = sess.table(inp["prediction_points"]).select("prediction_id", "entity_id", "prediction_time")
         app = sess.table(inp["silver_application"])
+        bur = sess.table(inp["silver_bureau"]).filter("DAYS_CREDIT <= 0")
+        bub = sess.table(inp["silver_bureau_balance"]).filter("MONTHS_BALANCE <= 0")
 
-        # Application features (all 8 app.*)
+        long_rows = []
+
+        # Application features (8)
         app_feats = app.select(
             col("SK_ID_CURR").alias("entity_id"),
             *[expr(f.lineage_expression).alias(f.feature_id) for f in FEATURES if f.feature_id.startswith("app.")],
         )
-        joined = pp.select("prediction_id", "entity_id").join(app_feats, "entity_id", "left")
-
-        # Pivot to long format: collect() is acceptable for fixture-scale; production uses explode+stack
-        long_rows = []
+        joined_app = pp_df.join(app_feats, "entity_id", "left")
         app_ids = [f.feature_id for f in FEATURES if f.feature_id.startswith("app.")]
-        for row in joined.collect():
-            eid = row["entity_id"] if row["entity_id"] else ""
+        for row in joined_app.collect():
             for fid in app_ids:
+                val = row[fid] if row[fid] is not None else None
                 long_rows.append(
                     {
                         "prediction_id": row["prediction_id"],
-                        "entity_id": eid,
+                        "entity_id": row["entity_id"],
+                        "prediction_time": str(row["prediction_time"]),
                         "feature_id": fid,
-                        "feature_value": str(row[fid]) if row[fid] is not None else None,
+                        "feature_value": str(val) if val is not None else None,
+                        "feature_version": "1",
+                        "feature_catalog_version": "hc-features-v1",
+                        "semantic_group_id": _get_semantic_group(fid),
+                        "leakage_risk": _get_leakage_risk(fid),
+                        "_source_manifest_sha256": "",
+                        "_prediction_snapshot_id": "",
                     }
                 )
+
+        # Bureau features (8) — aggregate then join
+        bur_aggs = []
+        for f in FEATURES:
+            if f.feature_id.startswith("bureau.") and not f.feature_id.startswith("bureau_balance."):
+                bur_aggs.append(expr(f.lineage_expression).alias(f.feature_id))
+        if bur_aggs:
+            bur_feats = (
+                bur.groupBy("SK_ID_CURR")
+                .agg(*bur_aggs)
+                .select(
+                    col("SK_ID_CURR").alias("entity_id"),
+                    *[
+                        col(f.feature_id)
+                        for f in FEATURES
+                        if f.feature_id.startswith("bureau.") and not f.feature_id.startswith("bureau_balance.")
+                    ],
+                )
+            )
+            joined_bur = pp_df.join(bur_feats, "entity_id", "left")
+            bur_ids = [
+                f.feature_id
+                for f in FEATURES
+                if f.feature_id.startswith("bureau.") and not f.feature_id.startswith("bureau_balance.")
+            ]
+            for row in joined_bur.collect():
+                for fid in bur_ids:
+                    val = row[fid] if fid in row and row[fid] is not None else None
+                    long_rows.append(
+                        {
+                            "prediction_id": row["prediction_id"],
+                            "entity_id": row["entity_id"],
+                            "prediction_time": str(row["prediction_time"]),
+                            "feature_id": fid,
+                            "feature_value": str(val) if val is not None else None,
+                            "feature_version": "1",
+                            "feature_catalog_version": "hc-features-v1",
+                            "semantic_group_id": _get_semantic_group(fid),
+                            "leakage_risk": _get_leakage_risk(fid),
+                            "_source_manifest_sha256": "",
+                            "_prediction_snapshot_id": "",
+                        }
+                    )
+
+        # Bureau balance features (4)
+        bub_aggs = []
+        for f in FEATURES:
+            if f.feature_id.startswith("bureau_balance."):
+                bub_aggs.append(expr(f.lineage_expression).alias(f.feature_id))
+        if bub_aggs:
+            bub_feats = bub.groupBy("SK_ID_CURR").agg(*bub_aggs)
+            joined_bub = pp_df.join(bub_feats, pp_df["entity_id"] == bub_feats["SK_ID_CURR"], "left")
+            bub_ids = [f.feature_id for f in FEATURES if f.feature_id.startswith("bureau_balance.")]
+            for row in joined_bub.collect():
+                for fid in bub_ids:
+                    val = row[fid] if fid in row and row[fid] is not None else None
+                    long_rows.append(
+                        {
+                            "prediction_id": row["prediction_id"],
+                            "entity_id": row["entity_id"],
+                            "prediction_time": str(row["prediction_time"]),
+                            "feature_id": fid,
+                            "feature_value": str(val) if val is not None else None,
+                            "feature_version": "1",
+                            "feature_catalog_version": "hc-features-v1",
+                            "semantic_group_id": _get_semantic_group(fid),
+                            "leakage_risk": _get_leakage_risk(fid),
+                            "_source_manifest_sha256": "",
+                            "_prediction_snapshot_id": "",
+                        }
+                    )
 
         df_long = sess.createDataFrame(long_rows)
         if not table_exists(sess, target):
@@ -109,6 +188,20 @@ def compute_features(
     finally:
         if own_spark:
             sess.stop()
+
+
+def _get_semantic_group(feature_id: str) -> str:
+    for f in FEATURES:
+        if f.feature_id == feature_id:
+            return f.semantic_group_id or ""
+    return ""
+
+
+def _get_leakage_risk(feature_id: str) -> str:
+    for f in FEATURES:
+        if f.feature_id == feature_id:
+            return f.leakage_risk.value
+    return "unknown"
 
 
 def compute_woe_rules(
