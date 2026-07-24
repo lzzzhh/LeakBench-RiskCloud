@@ -29,9 +29,10 @@ for t in "${expected_topics[@]}"; do
         echo "   FAIL: $t partitions=$pc (expected 3)" >&2
         exit 1
     fi
-    policy=$("${COMPOSE[@]}" exec -T kafka /opt/kafka/bin/kafka-configs.sh --bootstrap-server localhost:29092 --describe --entity-type topics --entity-name "$t" 2>/dev/null | grep -o 'cleanup.policy=[^, ]*' | cut -d= -f2)
+    config_out=$("${COMPOSE[@]}" exec -T kafka /opt/kafka/bin/kafka-configs.sh --bootstrap-server localhost:29092 --describe --entity-type topics --entity-name "$t" 2>/dev/null)
+    policy=$(printf '%s\n' "$config_out" | sed -nE 's/.*cleanup\.policy=([^[:space:]]+).*/\1/p' | head -n 1)
     case "$t" in
-        *feature_updates*) [[ "$policy" == *"compact"* && "$policy" == *"delete"* ]] || { echo "   FAIL: $t policy=$policy (expected compact,delete)" >&2; exit 1; } ;;
+        *feature_updates*) normalized=",$policy,"; [[ "$normalized" == *",compact,"* && "$normalized" == *",delete,"* ]] || { echo "   FAIL: $t policy=$policy (expected compact,delete)" >&2; exit 1; } ;;
         *) [[ "$policy" == "delete" ]] || { echo "   FAIL: $t policy=$policy (expected delete)" >&2; exit 1; } ;;
     esac
     echo "   $t: partitions=$pc policy=$policy OK"
@@ -42,8 +43,8 @@ echo "3. Producer/consumer..."
 msg="riskcloud-smoke-$(date +%s%N)"
 echo "$msg" | "${COMPOSE[@]}" exec -T kafka /opt/kafka/bin/kafka-console-producer.sh --bootstrap-server localhost:29092 --topic riskcloud.home_credit.application.v1 2>/dev/null
 consumed=$("${COMPOSE[@]}" exec -T kafka /opt/kafka/bin/kafka-console-consumer.sh --bootstrap-server localhost:29092 --topic riskcloud.home_credit.application.v1 --from-beginning --max-messages 1 --timeout-ms 30000 2>/dev/null || true)
-if [[ "$consumed" != *"$msg"* ]]; then
-    echo "   FAIL: message not consumed (expected='$msg', got='$consumed')" >&2
+if ! grep -Fqx "$msg" <<<"$consumed"; then
+    echo "   FAIL: message not consumed: $msg" >&2
     exit 1
 fi
 echo "   OK"

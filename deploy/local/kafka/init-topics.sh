@@ -38,6 +38,9 @@ for topic in "${!TOPICS[@]}"; do
         --partitions 3 \
         --replication-factor 1 \
         --config "cleanup.policy=$policy"
+
+    # Ensure config converges on re-runs
+    /opt/kafka/bin/kafka-configs.sh         --bootstrap-server "$BROKER"         --alter         --entity-type topics         --entity-name "$topic"         --add-config "cleanup.policy=$policy"
 done
 
 echo ""
