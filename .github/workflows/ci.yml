@@ -143,3 +143,27 @@ jobs:
         with:
           name: phase1-e2e-log
           path: phase1-e2e.log
+
+  prediction-points-integration:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+      - run: pip install "pyspark==3.5.3" "PyYAML>=6" pytest
+      - run: |
+          set -o pipefail
+          python -m pytest \
+            tests/platform/home_credit/test_phase1_e2e.py \
+            -v --tb=long -m e2e -k "test_full_pipeline_succeeds or test_rerun" \
+            2>&1 | tee pp-integration.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: pp-integration-log
+          path: pp-integration.log

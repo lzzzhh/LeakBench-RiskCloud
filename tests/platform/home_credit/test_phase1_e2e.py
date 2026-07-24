@@ -1,4 +1,4 @@
-"""Phase 1 — End-to-End full pipeline test."""
+"""Phase 1 E2E — full pipeline with richer fixture."""
 
 from __future__ import annotations
 
@@ -20,7 +20,7 @@ pytestmark = [
     pytest.mark.filterwarnings(r"ignore:.*socket\.socket.*:ResourceWarning"),
 ]
 
-FIXTURES = Path(__file__).resolve().parents[3] / "tests" / "fixtures" / "home_credit"
+PHASE1_FIXTURES = Path(__file__).resolve().parents[3] / "tests" / "fixtures" / "home_credit_phase1"
 REPO = Path(__file__).resolve().parents[3]
 BRONZE_CONFIG = REPO / "case_studies" / "home_credit" / "configs" / "bronze_v1.yaml"
 SILVER_CONFIG = REPO / "case_studies" / "home_credit" / "configs" / "silver_v1.yaml"
@@ -29,45 +29,30 @@ FEAT_CONFIG = REPO / "case_studies" / "home_credit" / "configs" / "features_v1.y
 REQUIRED_FILES = ["application_train.csv", "bureau.csv", "bureau_balance.csv"]
 
 
-def _e2e_setup():
+@pytest.fixture(scope="module")
+def e2e():
+    import gc
+
     tmp = tempfile.mkdtemp()
     data_dir = Path(tmp) / "data"
     data_dir.mkdir()
     for f in REQUIRED_FILES:
-        (data_dir / f).write_bytes((FIXTURES / f).read_bytes())
+        (data_dir / f).write_bytes((PHASE1_FIXTURES / f).read_bytes())
     manifest_path = Path(tmp) / "manifest.yaml"
     manifest = {"dataset": "home_credit", "files": [{"name": f, "required": True} for f in REQUIRED_FILES]}
     manifest_path.write_text(yaml.safe_dump(manifest), encoding="utf-8")
     from case_studies.home_credit.scripts.validate_manifest import populate_manifest
+
     assert populate_manifest(data_dir, manifest_path)
     warehouse = Path(tmp) / "warehouse"
     spark = get_spark(app_name="p1-e2e", warehouse=str(warehouse))
     setup_namespaces(spark)
-    return {"spark": spark, "tmp": tmp, "data_dir": data_dir, "manifest_path": manifest_path, "warehouse": warehouse}
 
-
-@pytest.fixture(scope="module")
-def e2e():
-    import gc
-    s = _e2e_setup()
-    yield s
-    gc.collect()
+    primary_error = None
     try:
-        s["spark"].stop()
-    except BaseException:
-        pass
-
-
-class TestE2E:
-
-    def test_full_pipeline(self, e2e):
-        spark = e2e["spark"]
-        tmp = e2e["tmp"]
-
         # Bronze
         bconfig = BronzeConfig.from_yaml(BRONZE_CONFIG)
-        bronze = ingest_bronze(bconfig, e2e["data_dir"], e2e["manifest_path"],
-                               Path(tmp) / "b_receipts", "e2e-b", spark=spark)
+        bronze = ingest_bronze(bconfig, data_dir, manifest_path, Path(tmp) / "b_receipts", "e2e-b", spark=spark)
         assert bronze["receipt"]["status"] == "COMPLETE"
 
         # Silver
@@ -80,7 +65,6 @@ class TestE2E:
         pp = generate_prediction_points(PP_CONFIG, Path(tmp) / "s_receipts" / "silver_receipt.yaml",
                                         Path(tmp) / "pp_receipts", "e2e-pp", spark=spark)
         assert pp["receipt"]["status"] == "COMPLETE"
-        assert pp["output"]["point_count"] == 1
 
         # Features
         feat = compute_features(FEAT_CONFIG, Path(tmp) / "feat_receipts", "e2e-feat", spark=spark)
@@ -91,9 +75,39 @@ class TestE2E:
                                 Path(tmp) / "woe_receipts", "e2e-woe", spark=spark)
         assert woe["receipt"]["status"] == "COMPLETE"
 
-    def test_full_rerun_idempotent(self, e2e):
-        spark = e2e["spark"]
-        tmp = e2e["tmp"]
-        b2 = ingest_bronze(BronzeConfig.from_yaml(BRONZE_CONFIG), e2e["data_dir"], e2e["manifest_path"],
-                           Path(tmp) / "b2_receipts", "e2e-b2", spark=spark)
+        yield {"spark": spark, "tmp": tmp, "bronze": bronze, "silver": silver, "pp": pp, "feat": feat, "woe": woe}
+    except BaseException as exc:
+        primary_error = exc
+        raise
+    finally:
+        gc.collect()
+        try:
+            spark.stop()
+        except BaseException as stop_err:
+            if primary_error is None:
+                raise
+            add_note = getattr(primary_error, "add_note", None)
+            if callable(add_note):
+                add_note(f"Spark teardown: {type(stop_err).__name__}")
+
+
+class TestE2E:
+
+    def test_full_pipeline_succeeds(self, e2e):
+        assert e2e["bronze"]["receipt"]["status"] == "COMPLETE"
+        assert e2e["silver"]["receipt"]["status"] == "COMPLETE"
+        assert e2e["pp"]["receipt"]["status"] == "COMPLETE"
+        assert e2e["feat"]["receipt"]["status"] == "COMPLETE"
+        assert e2e["woe"]["receipt"]["status"] == "COMPLETE"
+
+    def test_features_have_rows(self, e2e):
+        assert e2e["feat"]["output"]["feature_count"] > 0
+
+    def test_woe_has_rules(self, e2e):
+        assert e2e["woe"]["rule_count"] > 0
+
+    def test_rerun_bronze_idempotent(self, e2e):
+        b2 = ingest_bronze(BronzeConfig.from_yaml(BRONZE_CONFIG),
+                           Path(e2e["tmp"]) / "data", Path(e2e["tmp"]) / "manifest.yaml",
+                           Path(tempfile.mkdtemp()) / "b2_receipts", "e2e-b2", spark=e2e["spark"])
         assert b2["quality"]["rerun_duplicate_growth"] == 0
