@@ -77,7 +77,8 @@ def create_table(spark, table_name: str, col_defs: list[str], partition_field: s
 
 
 def validate_contract(
-    spark, table_name: str, expected_names: list[str], type_map: dict[str, str], required_props: dict[str, str]
+    spark, table_name: str, expected_names: list[str], type_map: dict[str, str],
+    required_props: dict[str, str], expected_partition: str = "_source_manifest_sha256",
 ):
     from pyspark.sql.types import DoubleType, IntegerType, StringType, TimestampType
 
@@ -95,6 +96,20 @@ def validate_contract(
     for k, v in required_props.items():
         if props.get(k) != v:
             raise RuntimeError(f"{table_name}: property {k} must be {v!r}")
+    # Partition spec
+    jt = spark._jvm.org.apache.iceberg.spark.Spark3Util.loadIcebergTable(spark._jsparkSession, table_name)
+    fields = jt.spec().fields()
+    if fields.size() != 1:
+        raise RuntimeError(f"{table_name}: expected 1 partition field, got {fields.size()}")
+    pf = fields.get(0)
+    if pf.name() != expected_partition:
+        raise RuntimeError(f"{table_name}: partition field must be {expected_partition}, got {pf.name()}")
+    if str(pf.transform()) != "identity":
+        raise RuntimeError(f"{table_name}: partition transform must be identity")
+
+
+class PublicationStateUnknownError(RuntimeError):
+    pass
 
 
 def get_snapshot_meta(spark, table_name: str) -> dict:
@@ -112,13 +127,27 @@ def get_snapshot_meta(spark, table_name: str) -> dict:
     if not ops_cls.isAssignableFrom(jt.getClass()):
         raise RuntimeError(f"{table_name}: no HasTableOperations")
     meta = jt.operations().refresh()
+    meta_snap = meta.currentSnapshot()
+    if meta_snap is None:
+        raise RuntimeError(f"{table_name}: TableMetadata no snapshot")
+    meta_sid = meta_snap.snapshotId()
+    if meta_sid != sid:
+        raise RuntimeError(f"{table_name}: metadata snapshot {meta_sid} != Table snapshot {sid}")
     loc = meta.metadataFileLocation()
     if not loc:
         raise RuntimeError(f"{table_name}: no metadata location")
     mp = jvm.org.apache.hadoop.fs.Path(loc)
     if not mp.getFileSystem(spark._jsc.hadoopConfiguration()).exists(mp):
         raise RuntimeError(f"{table_name}: metadata file missing")
-    return {"snapshot_id": sid, "metadata_location": loc, "runtime_class": str(jt.getClass().getName())}
+    # Verify in SQL snapshots
+    sql_sids = {r.snapshot_id for r in spark.sql(f"SELECT snapshot_id FROM {table_name}.snapshots").collect()}
+    if sid not in sql_sids:
+        raise RuntimeError(f"{table_name}: snapshot {sid} not in SQL snapshots {sql_sids}")
+    return {
+        "snapshot_id": sid, "metadata_snapshot_id": meta_sid, "metadata_location": loc,
+        "metadata_file_exists": True, "runtime_class": str(jt.getClass().getName()),
+        "class_loader": str(cl.getClass().getName()),
+    }
 
 
 def publish(receipt_dir: Path, stage: str, snapshot_manifest: dict, receipt: dict) -> tuple[str, str]:
@@ -127,6 +156,7 @@ def publish(receipt_dir: Path, stage: str, snapshot_manifest: dict, receipt: dic
     stage_dir = receipt_dir.with_name(f".{receipt_dir.name}.{os.getpid()}.staging")
     if stage_dir.exists():
         shutil.rmtree(stage_dir)
+    committed = False
     try:
         stage_dir.mkdir(parents=True)
         sm_sha = atomic_write_yaml(stage_dir / "snapshot_manifest.yaml", snapshot_manifest)
@@ -134,10 +164,17 @@ def publish(receipt_dir: Path, stage: str, snapshot_manifest: dict, receipt: dic
         r_sha = atomic_write_yaml(stage_dir / f"{stage}_receipt.yaml", receipt)
         fsync_dir(stage_dir)
         os.replace(stage_dir, receipt_dir)
+        committed = True
         fsync_dir(receipt_dir.parent)
         return sm_sha, r_sha
+    except BaseException:
+        if committed:
+            raise PublicationStateUnknownError(
+                "directory renamed but parent fsync failed; publication state unknown"
+            )
+        raise
     finally:
-        if stage_dir.exists():
+        if not committed and stage_dir.exists():
             shutil.rmtree(stage_dir)
 
 
