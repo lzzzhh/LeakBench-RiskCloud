@@ -248,12 +248,12 @@ class BureauBalanceEventPayload:
         extra = set(d.keys()) - {"SK_ID_CURR", "SK_ID_BUREAU", "MONTHS_BALANCE", "STATUS"}
         if extra:
             raise ValueError(f"unknown fields: {extra}")
+        months_balance = _validate_optional_int(d, "MONTHS_BALANCE", errors)
         if errors:
             raise ValueError("; ".join(errors))
         return cls(
             SK_ID_CURR=sk_curr, SK_ID_BUREAU=sk_bur,  # type: ignore[arg-type]
-            MONTHS_BALANCE=_validate_optional_int(d, "MONTHS_BALANCE", errors),
-            STATUS=st,
+            MONTHS_BALANCE=months_balance, STATUS=st,
         )
 
 
@@ -455,9 +455,16 @@ class FeatureUpdate:
             errors.append("computation_mode must be ComputationMode")
         if not isinstance(self.quality_status, QualityStatus):
             errors.append("quality_status must be QualityStatus")
-        # Only check integrity if IDs are parseable
-        if (self.feature_id in CATALOG_FEATURE_IDS
-                and self.feature_value is None or math.isfinite(self.feature_value)):
+        # Only check integrity if IDs are parseable and value is safe
+        value_safe = (
+            self.feature_value is None
+            or (
+                isinstance(self.feature_value, (int, float))
+                and not isinstance(self.feature_value, bool)
+                and math.isfinite(float(self.feature_value))
+            )
+        )
+        if self.feature_id in CATALOG_FEATURE_IDS and value_safe:
             if self.feature_update_id != self.expected_update_id():
                 errors.append("feature_update_id mismatch")
         return errors

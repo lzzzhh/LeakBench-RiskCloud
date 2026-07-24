@@ -106,6 +106,23 @@ class TestSourcePayloads:
         with pytest.raises(ValueError, match="SK_ID_CURR"):
             ApplicationEventPayload.from_dict({})
 
+
+    def test_bb_rejects_bad_months(self):
+        with pytest.raises(ValueError):
+            BureauBalanceEventPayload.from_dict({
+                "SK_ID_CURR": 1, "SK_ID_BUREAU": 500, "MONTHS_BALANCE": "bad",
+            })
+
+    def test_unknown_feature_with_none_is_fail_closed(self):
+        fu = FeatureUpdate(
+            feature_update_id="sha256:" + "a" * 64,
+            entity_id="SK_ID_CURR:1", feature_id="unknown.feature",
+            feature_value=None, feature_version=1,
+            event_time=NOW, computed_at=NOW,
+            source_event_id="sha256:" + "b" * 64, source_topic=TOPIC_BUREAU,
+        )
+        assert fu.is_valid() is False
+
     def test_app_rejects_bad_flag(self):
         with pytest.raises(ValueError, match="FLAG_DOCUMENT_2"):
             ApplicationEventPayload.from_dict({**_app_dict(), "FLAG_DOCUMENT_2": 2})
