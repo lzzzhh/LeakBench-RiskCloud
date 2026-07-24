@@ -1,30 +1,23 @@
-"""Phase 1 shared governance module — Iceberg lifecycle, publication, lineage.
-
-All P1.x stages use these helpers for:
-  - CREATE TABLE DDL with full contract
-  - SHOW TABLES fail-closed table existence
-  - Schema/partition/properties validation
-  - Current snapshot/metadata verification
-  - Atomic publication with staging directory
-  - Failure artifact isolation
-"""
+"""Phase 1 shared governance — Iceberg lifecycle, publication, lineage."""
 
 from __future__ import annotations
 
 import hashlib
 import os
 import shutil
+from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
 
 import yaml
 
+UTC = timezone.utc
 
-def _sha256(data: bytes) -> str:
+
+def sha256(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
 
-def _sha256_file(path: Path) -> str:
+def sha256_file(path: Path) -> str:
     h = hashlib.sha256()
     with open(path, "rb") as f:
         for chunk in iter(lambda: f.read(65536), b""):
@@ -32,7 +25,7 @@ def _sha256_file(path: Path) -> str:
     return h.hexdigest()
 
 
-def atomic_write_bytes(path: Path, content: bytes) -> None:
+def atomic_write(path: Path, content: bytes) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
     try:
@@ -54,11 +47,11 @@ def atomic_write_bytes(path: Path, content: bytes) -> None:
 
 def atomic_write_yaml(path: Path, payload: dict) -> str:
     content = yaml.safe_dump(payload, default_flow_style=False, sort_keys=False).encode("utf-8")
-    atomic_write_bytes(path, content)
-    return _sha256(content)
+    atomic_write(path, content)
+    return sha256(content)
 
 
-def fsync_directory(path: Path) -> None:
+def fsync_dir(path: Path) -> None:
     if not hasattr(os, "O_DIRECTORY"):
         return
     fd = os.open(path, os.O_RDONLY | os.O_DIRECTORY)
@@ -68,123 +61,100 @@ def fsync_directory(path: Path) -> None:
         os.close(fd)
 
 
-# -----------------------------------------------------------------
-# Table lifecycle
-# -----------------------------------------------------------------
-
-
 def table_exists(spark, table_name: str) -> bool:
     parts = table_name.split(".", 2)
     rows = spark.sql(f"SHOW TABLES IN `{parts[0]}`.`{parts[1]}`").collect()
     return any(r.tableName == parts[2] and not bool(r.isTemporary) for r in rows)
 
 
-def create_iceberg_table(spark, table_name: str, column_defs: list[str], properties: dict[str, str]):
-    cols = ",\n  ".join(column_defs)
-    props = ", ".join(f"'{k}'='{v}'" for k, v in properties.items())
-    ddl = f"CREATE TABLE {table_name} (\n  {cols}\n) USING iceberg TBLPROPERTIES ({props})"
-    spark.sql(ddl)
+def create_table(spark, table_name: str, col_defs: list[str], partition_field: str, props: dict[str, str]):
+    cols = ",\n  ".join(col_defs)
+    prop_str = ", ".join(f"'{k}'='{v}'" for k, v in props.items())
+    spark.sql(
+        f"CREATE TABLE {table_name} (\n  {cols}\n) USING iceberg "
+        f"PARTITIONED BY ({partition_field}) TBLPROPERTIES ({prop_str})"
+    )
 
 
-def validate_table_contract(
-    spark,
-    table_name: str,
-    expected_names: list[str],
-    expected_types: dict[str, str],
-    required_properties: dict[str, str],
+def validate_contract(
+    spark, table_name: str, expected_names: list[str], type_map: dict[str, str], required_props: dict[str, str]
 ):
-    """Full contract validation: schema names/types/order, table properties."""
-    from pyspark.sql.types import IntegerType, StringType
+    from pyspark.sql.types import DoubleType, IntegerType, StringType, TimestampType
 
     schema = spark.table(table_name).schema
     actual_names = [f.name for f in schema.fields]
     if actual_names != expected_names:
-        raise RuntimeError(f"{table_name}: field order mismatch; expected={expected_names}, actual={actual_names}")
-
+        raise RuntimeError(f"{table_name}: field order mismatch")
+    type_lookup = {"STRING": StringType, "INT": IntegerType, "DOUBLE": DoubleType, "TIMESTAMP": TimestampType}
     for fld in schema.fields:
-        expected = expected_types.get(fld.name)
-        if expected == "STRING" and not isinstance(fld.dataType, StringType):
-            raise RuntimeError(f"{table_name}.{fld.name}: expected STRING")
-        if expected == "INT" and not isinstance(fld.dataType, IntegerType):
-            raise RuntimeError(f"{table_name}.{fld.name}: expected INT")
-
+        exp = type_map.get(fld.name, "STRING")
+        exp_cls = type_lookup.get(exp)
+        if exp_cls and not isinstance(fld.dataType, exp_cls):
+            raise RuntimeError(f"{table_name}.{fld.name}: expected {exp}")
     props = {r.key: r.value for r in spark.sql(f"SHOW TBLPROPERTIES {table_name}").collect()}
-    for k, v in required_properties.items():
+    for k, v in required_props.items():
         if props.get(k) != v:
-            raise RuntimeError(f"{table_name}: property {k} must be {v!r}, got {props.get(k)!r}")
+            raise RuntimeError(f"{table_name}: property {k} must be {v!r}")
 
 
-def get_current_snapshot_metadata(spark, table_name: str) -> dict[str, Any]:
-    """Get current snapshot, metadata location, and cross-validate via Iceberg API."""
+def get_snapshot_meta(spark, table_name: str) -> dict:
     jvm = spark._jvm
-    jtable = jvm.org.apache.iceberg.spark.Spark3Util.loadIcebergTable(spark._jsparkSession, table_name)
-    cls_name = str(jtable.getClass().getName())
-    cl = jtable.getClass().getClassLoader()
+    jt = jvm.org.apache.iceberg.spark.Spark3Util.loadIcebergTable(spark._jsparkSession, table_name)
+    jt.refresh()
+    snap = jt.currentSnapshot()
+    if snap is None:
+        raise RuntimeError(f"{table_name}: no snapshot")
+    sid = snap.snapshotId()
+    cl = jt.getClass().getClassLoader()
     if cl is None:
         raise RuntimeError(f"{table_name}: no ClassLoader")
-    has_ops = cl.loadClass("org.apache.iceberg.HasTableOperations")
-    if not has_ops.isAssignableFrom(jtable.getClass()):
+    ops_cls = cl.loadClass("org.apache.iceberg.HasTableOperations")
+    if not ops_cls.isAssignableFrom(jt.getClass()):
         raise RuntimeError(f"{table_name}: no HasTableOperations")
-    ops = jtable.operations()
-    meta = ops.refresh()
-    jtable.refresh()
-    snap = jtable.currentSnapshot()
-    if snap is None:
-        raise RuntimeError(f"{table_name}: no current snapshot")
-    snap_id = snap.snapshotId()
+    meta = jt.operations().refresh()
     loc = meta.metadataFileLocation()
     if not loc:
         raise RuntimeError(f"{table_name}: no metadata location")
-    # Verify file exists
     mp = jvm.org.apache.hadoop.fs.Path(loc)
-    fs = mp.getFileSystem(spark._jsc.hadoopConfiguration())
-    if not fs.exists(mp):
-        raise RuntimeError(f"{table_name}: metadata file not found: {loc}")
-    return {"snapshot_id": snap_id, "metadata_location": loc, "runtime_class": cls_name}
+    if not mp.getFileSystem(spark._jsc.hadoopConfiguration()).exists(mp):
+        raise RuntimeError(f"{table_name}: metadata file missing")
+    return {"snapshot_id": sid, "metadata_location": loc, "runtime_class": str(jt.getClass().getName())}
 
 
-# -----------------------------------------------------------------
-# Publication
-# -----------------------------------------------------------------
-
-
-def publish_artifacts(
-    receipt_dir: Path,
-    snapshot_manifest: dict,
-    receipt: dict,
-) -> tuple[str, str]:
+def publish(receipt_dir: Path, stage: str, snapshot_manifest: dict, receipt: dict) -> tuple[str, str]:
     if receipt_dir.exists():
         raise RuntimeError(f"run directory exists: {receipt_dir}")
-    stage = receipt_dir.with_name(f".{receipt_dir.name}.{os.getpid()}.staging")
-    if stage.exists():
-        shutil.rmtree(stage)
+    stage_dir = receipt_dir.with_name(f".{receipt_dir.name}.{os.getpid()}.staging")
+    if stage_dir.exists():
+        shutil.rmtree(stage_dir)
     try:
-        stage.mkdir(parents=True)
-        sm_sha = atomic_write_yaml(stage / "snapshot_manifest.yaml", snapshot_manifest)
+        stage_dir.mkdir(parents=True)
+        sm_sha = atomic_write_yaml(stage_dir / "snapshot_manifest.yaml", snapshot_manifest)
         receipt["quality"]["snapshot_manifest_sha256"] = sm_sha
-        r_sha = atomic_write_yaml(stage / "receipt.yaml", receipt)
-        fsync_directory(stage)
-        os.replace(stage, receipt_dir)
-        fsync_directory(receipt_dir.parent)
+        r_sha = atomic_write_yaml(stage_dir / f"{stage}_receipt.yaml", receipt)
+        fsync_dir(stage_dir)
+        os.replace(stage_dir, receipt_dir)
+        fsync_dir(receipt_dir.parent)
         return sm_sha, r_sha
     finally:
-        if stage.exists():
-            shutil.rmtree(stage)
+        if stage_dir.exists():
+            shutil.rmtree(stage_dir)
 
 
-def write_failure_artifact(
+def write_failure(
     receipt_dir: Path,
+    stage: str,
     run_id: str,
     exc: BaseException,
-    completed_tables: list[str],
-    current_table: str | None,
+    completed: list[str],
+    current: str | None,
     input_info: dict,
     code_info: dict,
-) -> None:
-    failure_dir = receipt_dir.with_name(f"{receipt_dir.name}.failed")
-    if failure_dir.exists():
-        raise RuntimeError(f"failure dir exists: {failure_dir}")
-    failure_dir.mkdir(parents=True)
+):
+    fd = receipt_dir.with_name(f"{receipt_dir.name}.failed")
+    if fd.exists():
+        raise RuntimeError(f"failure dir exists: {fd}")
+    fd.mkdir(parents=True)
     failure = {
         "failure": {
             "version": 1,
@@ -192,9 +162,10 @@ def write_failure_artifact(
             "status": "FAILED",
             "error_type": type(exc).__name__,
             "error_message": str(exc),
+            "failed_at": datetime.now(UTC).isoformat(),
         },
         "input": input_info,
         "code": code_info,
-        "progress": {"completed_tables": completed_tables, "failed_table": current_table},
+        "progress": {"completed_tables": completed, "failed_table": current},
     }
-    atomic_write_yaml(failure_dir / "bronze_failure.yaml", failure)
+    atomic_write_yaml(fd / f"{stage}_failure.yaml", failure)

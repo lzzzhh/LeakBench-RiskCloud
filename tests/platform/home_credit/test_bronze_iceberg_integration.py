@@ -17,7 +17,7 @@ from case_studies.home_credit.pipelines.spark_env import get_spark, setup_namesp
 from riskcloud.adapters.home_credit.field_mapping import RAW_REQUIRED_COLUMNS
 
 pytestmark = [
-    pytest.mark.integration, pytest.mark.bronze_integration,
+    pytest.mark.bronze_integration,
     # PySpark 3.5.3 local socket readers may leave raw socket
     # cleanup to garbage collection. Filter restricted to
     # socket.socket unraisable/resource warnings in this module.
