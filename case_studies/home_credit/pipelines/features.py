@@ -24,7 +24,7 @@ FEATURES = get_features()
 def compute_features(
     config_path: Path, receipt_dir: Path, run_id: str, git_commit: str = "", warehouse: str | None = None, spark=None
 ) -> dict:
-    from pyspark.sql.functions import col, count, expr
+    from pyspark.sql.functions import col, concat, count, expr, lit
 
     from case_studies.home_credit.pipelines.spark_env import get_spark, setup_namespaces
 
@@ -51,7 +51,7 @@ def compute_features(
 
         # Application features (8)
         app_feats = app.select(
-            col("SK_ID_CURR").alias("entity_id"),
+            concat(lit("SK_ID_CURR:"), col("SK_ID_CURR").cast("string")).alias("entity_id"),
             *[expr(f.lineage_expression).alias(f.feature_id) for f in FEATURES if f.feature_id.startswith("app.")],
         )
         joined_app = pp_df.join(app_feats, "entity_id", "left")
@@ -85,7 +85,7 @@ def compute_features(
                 bur.groupBy("SK_ID_CURR")
                 .agg(*bur_aggs)
                 .select(
-                    col("SK_ID_CURR").alias("entity_id"),
+                    concat(lit("SK_ID_CURR:"), col("SK_ID_CURR").cast("string")).alias("entity_id"),
                     *[
                         col(f.feature_id)
                         for f in FEATURES
