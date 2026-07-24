@@ -27,7 +27,14 @@ jobs:
           pip install pytest pyyaml
 
       - name: Run tests
-        run: python -m pytest tests/ -v --tb=short -m "not integration"
+        run: >
+          python -m pytest tests/ -v --tb=short
+          -m "not bronze_integration
+          and not silver_integration
+          and not prediction_points_integration
+          and not features_integration
+          and not woe_iv_integration
+          and not e2e"
 
       - name: Verify scientific freeze lock
         run: python -m riskcloud.freeze
