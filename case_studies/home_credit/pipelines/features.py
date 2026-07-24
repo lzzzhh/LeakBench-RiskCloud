@@ -1,4 +1,4 @@
-"""P1.5 As-of Features + P1.6 WOE/IV + Strict/Full Views."""
+"""P1.5 As-of Features + P1.6 WOE/IV with explicit aggregation."""
 
 from __future__ import annotations
 
@@ -24,18 +24,31 @@ FEATURES = get_features()
 def compute_features(
     config_path: Path, receipt_dir: Path, run_id: str, git_commit: str = "", warehouse: str | None = None, spark=None
 ) -> dict:
-    from pyspark.sql.functions import col, concat, count, expr, lit
+    from pyspark.sql.functions import (
+        array,
+        asc,
+        avg,
+        col,
+        concat,
+        count,
+        desc,
+        explode,
+        expr,
+        lit,
+        row_number,
+        struct,
+        when,
+    )
+    from pyspark.sql.functions import sum as spark_sum
+    from pyspark.sql.window import Window
 
     from case_studies.home_credit.pipelines.spark_env import get_spark, setup_namespaces
 
-    started_at = datetime.now(UTC)
     own_spark = spark is None
-
     with open(config_path) as f:
         cfg = yaml.safe_load(f)
     inp = cfg["input"]
     target = cfg["features"]["table"]
-
     if receipt_dir.exists():
         raise RuntimeError(f"run directory exists: {receipt_dir}")
 
@@ -44,164 +57,133 @@ def compute_features(
         setup_namespaces(sess)
         pp_df = sess.table(inp["prediction_points"]).select("prediction_id", "entity_id", "prediction_time")
         app = sess.table(inp["silver_application"])
-        bur = sess.table(inp["silver_bureau"]).filter("DAYS_CREDIT <= 0")
-        bub = sess.table(inp["silver_bureau_balance"]).filter("MONTHS_BALANCE <= 0")
+        bur = sess.table(inp["silver_bureau"]).filter(col("DAYS_CREDIT") <= 0)
+        bub = sess.table(inp["silver_bureau_balance"]).filter(col("MONTHS_BALANCE") <= 0)
 
-        long_rows = []
+        canonical_id = concat(lit("SK_ID_CURR:"), col("SK_ID_CURR").cast("string"))
 
-        # Application features (8)
+        # Application features — use catalog expressions (controlled subset)
         app_feats = app.select(
-            concat(lit("SK_ID_CURR:"), col("SK_ID_CURR").cast("string")).alias("entity_id"),
+            canonical_id.alias("entity_id"),
             *[expr(f.lineage_expression).alias(f.feature_id) for f in FEATURES if f.feature_id.startswith("app.")],
         )
-        joined_app = pp_df.join(app_feats, "entity_id", "left")
-        app_ids = [f.feature_id for f in FEATURES if f.feature_id.startswith("app.")]
-        for row in joined_app.collect():
-            for fid in app_ids:
-                val = row[fid] if row[fid] is not None else None
-                long_rows.append(
-                    {
-                        "prediction_id": row["prediction_id"],
-                        "entity_id": row["entity_id"],
-                        "prediction_time": str(row["prediction_time"]),
-                        "feature_id": fid,
-                        "feature_value": str(val) if val is not None else None,
-                        "feature_version": "1",
-                        "feature_catalog_version": "hc-features-v1",
-                        "semantic_group_id": _get_semantic_group(fid),
-                        "leakage_risk": _get_leakage_risk(fid),
-                        "_source_manifest_sha256": "",
-                        "_prediction_snapshot_id": "",
-                    }
-                )
 
-        # Bureau features (8) — aggregate then join
-        bur_aggs = []
-        for f in FEATURES:
-            if f.feature_id.startswith("bureau.") and not f.feature_id.startswith("bureau_balance."):
-                bur_aggs.append(expr(f.lineage_expression).alias(f.feature_id))
-        if bur_aggs:
-            bur_feats = (
-                bur.groupBy("SK_ID_CURR")
-                .agg(*bur_aggs)
-                .select(
-                    concat(lit("SK_ID_CURR:"), col("SK_ID_CURR").cast("string")).alias("entity_id"),
-                    *[
-                        col(f.feature_id)
-                        for f in FEATURES
-                        if f.feature_id.startswith("bureau.") and not f.feature_id.startswith("bureau_balance.")
-                    ],
-                )
+        # Bureau features — explicit Spark aggregation
+        bur_feats = (
+            bur.groupBy("SK_ID_CURR")
+            .agg(
+                count(lit(1)).cast("double").alias("bureau.record_count"),
+                spark_sum(when(col("CREDIT_ACTIVE") == "Active", 1).otherwise(0))
+                .cast("double")
+                .alias("bureau.active_count"),
+                spark_sum(when(col("CREDIT_ACTIVE") == "Closed", 1).otherwise(0))
+                .cast("double")
+                .alias("bureau.closed_count"),
+                spark_sum("AMT_CREDIT_SUM").cast("double").alias("bureau.credit_sum_total"),
+                spark_sum("AMT_CREDIT_SUM_DEBT").cast("double").alias("bureau.debt_sum_total"),
+                spark_sum("AMT_CREDIT_SUM_OVERDUE").cast("double").alias("bureau.overdue_sum_total"),
+                avg("DAYS_CREDIT").cast("double").alias("bureau.days_credit_mean"),
+                spark_sum(when(col("DAYS_CREDIT").between(-365, 0), 1).otherwise(0))
+                .cast("double")
+                .alias("bureau.recent_12m_count"),
             )
-            joined_bur = pp_df.join(bur_feats, "entity_id", "left")
-            bur_ids = [
-                f.feature_id
-                for f in FEATURES
-                if f.feature_id.startswith("bureau.") and not f.feature_id.startswith("bureau_balance.")
-            ]
-            for row in joined_bur.collect():
-                for fid in bur_ids:
-                    val = row[fid] if fid in row and row[fid] is not None else None
-                    long_rows.append(
-                        {
-                            "prediction_id": row["prediction_id"],
-                            "entity_id": row["entity_id"],
-                            "prediction_time": str(row["prediction_time"]),
-                            "feature_id": fid,
-                            "feature_value": str(val) if val is not None else None,
-                            "feature_version": "1",
-                            "feature_catalog_version": "hc-features-v1",
-                            "semantic_group_id": _get_semantic_group(fid),
-                            "leakage_risk": _get_leakage_risk(fid),
-                            "_source_manifest_sha256": "",
-                            "_prediction_snapshot_id": "",
-                        }
-                    )
+            .select(canonical_id.alias("entity_id"), "*")
+        )
 
-        # Bureau balance features (4)
-        bub_aggs = []
-        for f in FEATURES:
-            if f.feature_id.startswith("bureau_balance."):
-                bub_aggs.append(expr(f.lineage_expression).alias(f.feature_id))
-        if bub_aggs:
-            bub_feats = bub.groupBy("SK_ID_CURR").agg(*bub_aggs)
-            joined_bub = pp_df.join(bub_feats, pp_df["entity_id"] == bub_feats["SK_ID_CURR"], "left")
-            bub_ids = [f.feature_id for f in FEATURES if f.feature_id.startswith("bureau_balance.")]
-            for row in joined_bub.collect():
-                for fid in bub_ids:
-                    val = row[fid] if fid in row and row[fid] is not None else None
-                    long_rows.append(
-                        {
-                            "prediction_id": row["prediction_id"],
-                            "entity_id": row["entity_id"],
-                            "prediction_time": str(row["prediction_time"]),
-                            "feature_id": fid,
-                            "feature_value": str(val) if val is not None else None,
-                            "feature_version": "1",
-                            "feature_catalog_version": "hc-features-v1",
-                            "semantic_group_id": _get_semantic_group(fid),
-                            "leakage_risk": _get_leakage_risk(fid),
-                            "_source_manifest_sha256": "",
-                            "_prediction_snapshot_id": "",
-                        }
-                    )
+        # Bureau balance features — explicit aggregation
+        delinq_level = (
+            when(col("STATUS") == "0", 0)
+            .when(col("STATUS") == "1", 1)
+            .when(col("STATUS") == "2", 2)
+            .when(col("STATUS") == "3", 3)
+            .when(col("STATUS") == "4", 4)
+            .when(col("STATUS") == "5", 5)
+            .when(col("STATUS").isin("C", "X"), 0)
+        )
+        bub_base = bub.groupBy("SK_ID_CURR").agg(
+            count(lit(1)).cast("double").alias("bureau_balance.month_count"),
+            spark_sum(when(col("STATUS").isin("1", "2", "3", "4", "5"), 1).otherwise(0))
+            .cast("double")
+            .alias("bureau_balance.delinquent_month_count"),
+            spark_sum(delinq_level).alias("bureau_balance.max_delinquency_level"),
+        )
+        # Latest status
+        w = Window.partitionBy("SK_ID_CURR").orderBy(desc("MONTHS_BALANCE"), asc("SK_ID_BUREAU"))
+        bub_latest = (
+            bub.withColumn("rn", row_number().over(w))
+            .filter(col("rn") == 1)
+            .select(
+                "SK_ID_CURR",
+                when(col("STATUS").isin("1", "2", "3", "4", "5"), 1.0)
+                .otherwise(0.0)
+                .alias("bureau_balance.latest_status_delinquent"),
+            )
+        )
+        bub_feats = bub_base.join(bub_latest, "SK_ID_CURR", "left").select(canonical_id.alias("entity_id"), "*")
 
-        df_long = sess.createDataFrame(long_rows)
+        # Build wide table and pivot to long format
+        wide = (
+            pp_df.join(app_feats, "entity_id", "left")
+            .join(bur_feats, "entity_id", "left")
+            .join(bub_feats, "entity_id", "left")
+        )
+
+        # Long format via explode
+        fid_list = [f.feature_id for f in FEATURES]
+        structs = [
+            struct(
+                lit(fid).alias("feature_id"),
+                col(fid).cast("double").alias("feature_value"),
+            )
+            for fid in fid_list
+        ]
+        flat = wide.withColumn("_feat", explode(array(*structs))).select(
+            "prediction_id",
+            "entity_id",
+            "prediction_time",
+            col("_feat.feature_id"),
+            col("_feat.feature_value"),
+        )
+
+        # Create or write table
+        props = {
+            "format-version": "2",
+            "write.format.default": "parquet",
+            "riskcloud.dataset_id": "home_credit",
+            "riskcloud.layer": "gold",
+        }
+        cols = [
+            "prediction_id STRING",
+            "entity_id STRING",
+            "prediction_time TIMESTAMP",
+            "feature_id STRING",
+            "feature_value DOUBLE",
+            "_source_manifest_sha256 STRING",
+        ]
         if not table_exists(sess, target):
-            create_table(
-                sess,
-                target,
-                [
-                    "prediction_id STRING",
-                    "entity_id STRING",
-                    "feature_id STRING",
-                    "feature_value STRING",
-                    "_feature_version STRING",
-                ],
-                "_feature_version",
-                {
-                    "format-version": "2",
-                    "write.format.default": "parquet",
-                    "riskcloud.dataset_id": "home_credit",
-                    "riskcloud.layer": "gold",
-                },
-            )
-        df_long.writeTo(target).overwritePartitions()
+            create_table(sess, target, cols, "_source_manifest_sha256", props)
+        flat.withColumn("_source_manifest_sha256", lit("")).writeTo(target).overwritePartitions()
 
-        count = sess.table(target).count()
         meta = get_snapshot_meta(sess, target)
         receipt = {
             "receipt": {
                 "receipt_version": 1,
                 "run_id": run_id,
                 "status": "COMPLETE",
-                "created_at": started_at.isoformat(),
+                "created_at": datetime.now(UTC).isoformat(),
             },
-            "output": {"table": target, "feature_count": count, "iceberg_snapshot_id": meta["snapshot_id"]},
+            "output": {
+                "table": target,
+                "feature_count": sess.table(target).count(),
+                "iceberg_snapshot_id": meta["snapshot_id"],
+            },
         }
-        sm = {
-            "manifest": {"manifest_id": run_id, "status": "COMPLETE", "created_at": started_at.isoformat()},
-            "code": {"git_commit": git_commit},
-        }
+        sm = {"manifest": {"manifest_id": run_id, "status": "COMPLETE"}, "code": {"git_commit": git_commit}}
         publish(receipt_dir, "features", sm, receipt)
         return receipt
     finally:
         if own_spark:
             sess.stop()
-
-
-def _get_semantic_group(feature_id: str) -> str:
-    for f in FEATURES:
-        if f.feature_id == feature_id:
-            return f.semantic_group_id or ""
-    return ""
-
-
-def _get_leakage_risk(feature_id: str) -> str:
-    for f in FEATURES:
-        if f.feature_id == feature_id:
-            return f.leakage_risk.value
-    return "unknown"
 
 
 def compute_woe_rules(
@@ -212,22 +194,17 @@ def compute_woe_rules(
     warehouse: str | None = None,
     spark=None,
 ) -> dict:
-    """P1.6 — Train-only WOE/IV with deterministic quantile binning + additive smoothing."""
     from pyspark.sql.functions import col
 
     from case_studies.home_credit.pipelines.spark_env import get_spark
 
-    started_at = datetime.now(UTC)
     own_spark = spark is None
     sess = get_spark(app_name=f"riskcloud-woe-{run_id}", warehouse=warehouse) if own_spark else spark
     try:
         pp = sess.table(prediction_points_table)
         fv = sess.table(feature_table)
-
-        # Join features to prediction points, filter to train split
         train = pp.filter("split = 'train'").select("prediction_id", "entity_id", "label")
         fv_train = fv.join(train, "prediction_id", "inner")
-
         rules = {}
         feature_ids = [r.feature_id for r in fv.select("feature_id").distinct().collect()]
         for fid in feature_ids:
@@ -236,20 +213,18 @@ def compute_woe_rules(
             if len(vals) < 8:
                 continue
             vals.sort(key=lambda x: x[0])
-            q = len(vals) // 4  # quartile bins
-            if q < 2:
-                continue
+            q = max(len(vals) // 4, 1)
             bins = []
-            total_good = sum(1 for v, lbl in vals if lbl == 0)
-            total_bad = sum(1 for v, lbl in vals if lbl == 1)
+            total_good = sum(1 for _, lbl in vals if lbl == 0)
+            total_bad = sum(1 for _, lbl in vals if lbl == 1)
             if total_good == 0 or total_bad == 0:
                 continue
             for i in range(4):
                 lo = vals[i * q][0]
                 hi = vals[min((i + 1) * q, len(vals)) - 1][0]
                 bin_vals = vals[i * q : min((i + 1) * q, len(vals))]
-                g = sum(1 for v, lbl in bin_vals if lbl == 0) + 0.5
-                b = sum(1 for v, lbl in bin_vals if lbl == 1) + 0.5
+                g = sum(1 for _, lbl in bin_vals if lbl == 0) + 0.5
+                b = sum(1 for _, lbl in bin_vals if lbl == 1) + 0.5
                 gd = g / (total_good + 2.0)
                 bd = b / (total_bad + 2.0)
                 woe = math.log(gd / bd) if gd > 0 and bd > 0 else 0.0
@@ -258,8 +233,10 @@ def compute_woe_rules(
                     {
                         "lower": lo,
                         "upper": hi,
-                        "good_count": g,
-                        "bad_count": b,
+                        "raw_good_count": sum(1 for _, lbl in bin_vals if lbl == 0),
+                        "raw_bad_count": sum(1 for _, lbl in bin_vals if lbl == 1),
+                        "smoothed_good_count": g,
+                        "smoothed_bad_count": b,
                         "good_distribution": gd,
                         "bad_distribution": bd,
                         "woe": woe,
@@ -271,18 +248,12 @@ def compute_woe_rules(
                 "feature_id": fid,
                 "bins": bins,
                 "total_iv": total_iv,
-                "train_count": len(vals),
-                "train_good": total_good,
-                "train_bad": total_bad,
+                "training_sample_count": len(vals),
+                "training_good_count": total_good,
+                "training_bad_count": total_bad,
             }
-
         receipt = {
-            "receipt": {
-                "receipt_version": 1,
-                "run_id": run_id,
-                "status": "COMPLETE",
-                "created_at": started_at.isoformat(),
-            },
+            "receipt": {"receipt_version": 1, "run_id": run_id, "status": "COMPLETE"},
             "rules": rules,
             "rule_count": len(rules),
         }
