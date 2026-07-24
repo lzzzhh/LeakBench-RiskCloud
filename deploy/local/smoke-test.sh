@@ -1,18 +1,19 @@
 #!/bin/bash
-# Smoke test for Kafka + Flink infrastructure
+# Smoke test for Kafka + Flink infrastructure — all assertions fail-closed
 set -euo pipefail
 
-COMPOSE_FILE="deploy/local/docker-compose.realtime.yml"
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd -- "${SCRIPT_DIR}/../.." && pwd)"
+COMPOSE=(docker compose --project-directory "$REPO_ROOT" -f "$REPO_ROOT/deploy/local/docker-compose.realtime.yml")
 
 echo "=== RiskCloud Infrastructure Smoke Test ==="
 
 # 1. Kafka broker health
-echo "1. Kafka broker health..."
-docker compose -f "$COMPOSE_FILE" exec -T kafka \
-    /opt/kafka/bin/kafka-broker-api-versions.sh --bootstrap-server localhost:29092 >/dev/null
+echo "1. Kafka broker..."
+"${COMPOSE[@]}" exec -T kafka /opt/kafka/bin/kafka-broker-api-versions.sh --bootstrap-server localhost:29092 >/dev/null
 echo "   OK"
 
-# 2. Topics exist
+# 2. Topics with partition and policy verification
 echo "2. Topics..."
 expected_topics=(
     "riskcloud.home_credit.application.v1"
@@ -22,31 +23,54 @@ expected_topics=(
     "riskcloud.home_credit.dlq.v1"
 )
 for t in "${expected_topics[@]}"; do
-    desc=$(docker compose -f "$COMPOSE_FILE" exec -T kafka \
-        /opt/kafka/bin/kafka-topics.sh --bootstrap-server localhost:29092 --describe --topic "$t" 2>/dev/null)
-    echo "   $t: partitions=$(echo "$desc" | grep -c 'Partition:')"
+    desc=$("${COMPOSE[@]}" exec -T kafka /opt/kafka/bin/kafka-topics.sh --bootstrap-server localhost:29092 --describe --topic "$t" 2>/dev/null)
+    pc=$(echo "$desc" | grep -c 'Partition:' || true)
+    if [ "$pc" -ne 3 ]; then
+        echo "   FAIL: $t partitions=$pc (expected 3)" >&2
+        exit 1
+    fi
+    policy=$("${COMPOSE[@]}" exec -T kafka /opt/kafka/bin/kafka-configs.sh --bootstrap-server localhost:29092 --describe --entity-type topics --entity-name "$t" 2>/dev/null | grep -o 'cleanup.policy=[^, ]*' | cut -d= -f2)
+    case "$t" in
+        *feature_updates*) [[ "$policy" == *"compact"* && "$policy" == *"delete"* ]] || { echo "   FAIL: $t policy=$policy (expected compact,delete)" >&2; exit 1; } ;;
+        *) [[ "$policy" == "delete" ]] || { echo "   FAIL: $t policy=$policy (expected delete)" >&2; exit 1; } ;;
+    esac
+    echo "   $t: partitions=$pc policy=$policy OK"
 done
 
 # 3. Producer/consumer smoke
-echo "3. Producer/consumer smoke..."
-echo "test-msg" | docker compose -f "$COMPOSE_FILE" exec -T kafka \
-    /opt/kafka/bin/kafka-console-producer.sh --bootstrap-server localhost:29092 \
-    --topic riskcloud.home_credit.application.v1 2>/dev/null
-docker compose -f "$COMPOSE_FILE" exec -T kafka \
-    /opt/kafka/bin/kafka-console-consumer.sh --bootstrap-server localhost:29092 \
-    --topic riskcloud.home_credit.application.v1 --from-beginning --max-messages 1 \
-    --timeout-ms 10000 2>/dev/null | grep -q "test-msg"
+echo "3. Producer/consumer..."
+msg="riskcloud-smoke-$(date +%s%N)"
+echo "$msg" | "${COMPOSE[@]}" exec -T kafka /opt/kafka/bin/kafka-console-producer.sh --bootstrap-server localhost:29092 --topic riskcloud.home_credit.application.v1 2>/dev/null
+consumed=$("${COMPOSE[@]}" exec -T kafka /opt/kafka/bin/kafka-console-consumer.sh --bootstrap-server localhost:29092 --topic riskcloud.home_credit.application.v1 --from-beginning --max-messages 1 --timeout-ms 30000 2>/dev/null || true)
+if [[ "$consumed" != *"$msg"* ]]; then
+    echo "   FAIL: message not consumed (expected='$msg', got='$consumed')" >&2
+    exit 1
+fi
 echo "   OK"
 
 # 4. Flink REST
 echo "4. Flink REST..."
 overview=$(curl -sf http://localhost:8081/overview)
-echo "   OK: $(echo "$overview" | python3 -c "import sys,json; d=json.load(sys.stdin); print(f'taskmanagers={d[\"taskmanagers\"]}, slots={d[\"slots-total\"]}')")"
+echo "$overview" | python3 -c "
+import sys, json
+d = json.load(sys.stdin)
+assert d['taskmanagers'] >= 1, f'taskmanagers={d[\"taskmanagers\"]}'
+assert d['slots-total'] >= 2, f'slots={d[\"slots-total\"]}'
+print(f'   taskmanagers={d[\"taskmanagers\"]}, slots={d[\"slots-total\"]} OK')
+"
 
-# 5. Flink checkpoint config
-echo "5. Flink checkpoint config..."
-docker compose -f "$COMPOSE_FILE" exec -T flink-jobmanager \
-    bash -c 'grep -q "execution.checkpointing.interval: 10s" /opt/flink/conf/flink-conf.yaml 2>/dev/null || grep -q "checkpointing.interval" <(echo "$FLINK_PROPERTIES")' && echo "   OK" || echo "   WARN: config not verified"
+# 5. Flink checkpoint config via REST
+echo "5. Flink config..."
+config=$(curl -sf http://localhost:8081/jobmanager/config)
+echo "$config" | python3 -c "
+import sys, json
+d = json.load(sys.stdin)
+assert any(x['key'] == 'execution.checkpointing.interval' and x['value'] == '10 s' for x in d), 'checkpoint interval missing'
+assert any(x['key'] == 'execution.checkpointing.mode' and x['value'] == 'EXACTLY_ONCE' for x in d), 'checkpoint mode missing'
+assert any(x['key'] == 'state.checkpoints.dir' and x['value'] == 'file:///data/flink/checkpoints' for x in d), 'checkpoint dir missing'
+assert any(x['key'] == 'state.savepoints.dir' and x['value'] == 'file:///data/flink/savepoints' for x in d), 'savepoint dir missing'
+print('   checkpoint config OK')
+"
 
 echo ""
 echo "=== Infrastructure smoke test PASSED ==="

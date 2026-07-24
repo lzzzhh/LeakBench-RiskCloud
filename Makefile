@@ -41,5 +41,5 @@ realtime-test:
 	$(MAKE) realtime-smoke
 
 realtime-clean:
-	$(REALTIME_COMPOSE) down -v
-	rm -rf data/kafka data/flink/checkpoints data/flink/savepoints
+	-$(REALTIME_COMPOSE) down -v --remove-orphans
+	docker run --rm -v $(CURDIR)/data:/data alpine:3.20 sh -ec 'rm -rf /data/kafka /data/flink/checkpoints /data/flink/savepoints'

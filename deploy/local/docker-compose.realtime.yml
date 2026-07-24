@@ -1,7 +1,25 @@
 services:
+  storage-init:
+    image: alpine:3.20
+    user: "0:0"
+    volumes:
+      - ./data/kafka:/state/kafka
+      - ./data/flink/checkpoints:/state/flink/checkpoints
+      - ./data/flink/savepoints:/state/flink/savepoints
+    command:
+      - /bin/sh
+      - -ec
+      - |
+        mkdir -p /state/kafka /state/flink/checkpoints /state/flink/savepoints
+        chown -R 1000:1000 /state/kafka
+        chmod -R 0777 /state/flink
+
   kafka:
     image: apache/kafka:3.9.1
     container_name: riskcloud-kafka
+    depends_on:
+      storage-init:
+        condition: service_completed_successfully
     ports:
       - "9092:9092"
     environment:
@@ -39,6 +57,11 @@ services:
   flink-jobmanager:
     image: apache/flink:1.19.1-scala_2.12-java17
     container_name: riskcloud-flink-jm
+    depends_on:
+      storage-init:
+        condition: service_completed_successfully
+      kafka-init:
+        condition: service_completed_successfully
     ports:
       - "8081:8081"
     environment:
@@ -64,6 +87,8 @@ services:
     image: apache/flink:1.19.1-scala_2.12-java17
     container_name: riskcloud-flink-tm
     depends_on:
+      storage-init:
+        condition: service_completed_successfully
       flink-jobmanager:
         condition: service_healthy
     environment:
