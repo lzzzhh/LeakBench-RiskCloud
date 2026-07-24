@@ -42,7 +42,7 @@ done
 echo "3. Producer/consumer..."
 msg="riskcloud-smoke-$(date +%s%N)"
 echo "$msg" | "${COMPOSE[@]}" exec -T kafka /opt/kafka/bin/kafka-console-producer.sh --bootstrap-server localhost:29092 --topic riskcloud.home_credit.application.v1 2>/dev/null
-consumed=$("${COMPOSE[@]}" exec -T kafka /opt/kafka/bin/kafka-console-consumer.sh --bootstrap-server localhost:29092 --topic riskcloud.home_credit.application.v1 --from-beginning --max-messages 1 --timeout-ms 30000 2>/dev/null || true)
+consumed=$("${COMPOSE[@]}" exec -T kafka /opt/kafka/bin/kafka-console-consumer.sh --bootstrap-server localhost:29092 --topic riskcloud.home_credit.application.v1 --from-beginning --timeout-ms 30000 2>/dev/null || true)
 if ! grep -Fqx "$msg" <<<"$consumed"; then
     echo "   FAIL: message not consumed: $msg" >&2
     exit 1

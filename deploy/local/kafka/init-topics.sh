@@ -40,7 +40,14 @@ for topic in "${!TOPICS[@]}"; do
         --config "cleanup.policy=$policy"
 
     # Ensure config converges on re-runs
-    /opt/kafka/bin/kafka-configs.sh         --bootstrap-server "$BROKER"         --alter         --entity-type topics         --entity-name "$topic"         --add-config "cleanup.policy=$policy"
+    if [[ "$policy" == *,* ]]; then
+        config_arg="cleanup.policy=[$policy]"
+    else
+        config_arg="cleanup.policy=$policy"
+    fi
+    /opt/kafka/bin/kafka-configs.sh         --bootstrap-server "$BROKER"         --alter         --entity-type topics         --entity-name "$topic"         --add-config "$config_arg"
+
+    /opt/kafka/bin/kafka-configs.sh         --bootstrap-server "$BROKER"         --describe         --entity-type topics         --entity-name "$topic"
 done
 
 echo ""
