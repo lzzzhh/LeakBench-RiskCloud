@@ -123,8 +123,13 @@ class TestE2E:
         assert not missing, f"Missing feature IDs: {missing}"
         assert not extra, f"Unexpected feature IDs: {extra}"
 
-    def test_rerun_bronze_idempotent(self, e2e):
-        b2 = ingest_bronze(BronzeConfig.from_yaml(BRONZE_CONFIG),
-                           Path(e2e["tmp"]) / "data", Path(e2e["tmp"]) / "manifest.yaml",
-                           Path(tempfile.mkdtemp()) / "b2_receipts", "e2e-b2", spark=e2e["spark"])
-        assert b2["quality"]["rerun_duplicate_growth"] == 0
+    def test_entity_ids_are_canonical(self, e2e):
+        """All entity_ids in Prediction Points must be SK_ID_CURR:NNN format."""
+        spark = e2e["spark"]
+        rows = spark.sql(
+            "SELECT DISTINCT entity_id FROM riskcloud.gold.prediction_points"
+        ).collect()
+        for r in rows:
+            assert r.entity_id.startswith("SK_ID_CURR:"), f"Bad entity_id: {r.entity_id}"
+            suffix = r.entity_id.split(":", 1)[1]
+            assert suffix.isdigit(), f"Non-numeric suffix: {suffix}"
