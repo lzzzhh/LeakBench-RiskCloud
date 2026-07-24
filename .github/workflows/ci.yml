@@ -27,7 +27,14 @@ jobs:
           pip install pytest pyyaml
 
       - name: Run tests
-        run: python -m pytest tests/ -v --tb=short -m "not bronze_integration"
+        run: >
+          python -m pytest tests/ -v --tb=short
+          -m "not bronze_integration
+          and not silver_integration
+          and not prediction_points_integration
+          and not features_integration
+          and not woe_iv_integration
+          and not e2e"
 
       - name: Verify scientific freeze lock
         run: python -m riskcloud.freeze
@@ -88,3 +95,51 @@ jobs:
         with:
           name: bronze-integration-log
           path: bronze-integration.log
+
+  silver-iceberg-integration:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+      - run: pip install "pyspark==3.5.3" "PyYAML>=6" pytest
+      - run: |
+          set -o pipefail
+          python -m pytest \
+            tests/platform/home_credit/test_silver_iceberg_integration.py \
+            -v --tb=long -m silver_integration \
+            2>&1 | tee silver-integration.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: silver-integration-log
+          path: silver-integration.log
+
+  phase1-e2e:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+      - run: pip install "pyspark==3.5.3" "PyYAML>=6" pytest
+      - run: |
+          set -o pipefail
+          python -m pytest \
+            tests/platform/home_credit/test_phase1_e2e.py \
+            -v --tb=long -m e2e \
+            2>&1 | tee phase1-e2e.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: phase1-e2e-log
+          path: phase1-e2e.log

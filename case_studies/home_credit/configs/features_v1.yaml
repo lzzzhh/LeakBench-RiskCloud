@@ -1,0 +1,44 @@
+# P1.5 — As-of Features configuration
+
+features:
+  version: hc-features-v1
+  catalog: riskcloud
+  namespace: gold
+  table: riskcloud.gold.feature_values
+
+input:
+  silver_application: riskcloud.silver.application_train
+  silver_bureau: riskcloud.silver.bureau
+  silver_bureau_balance: riskcloud.silver.bureau_balance
+  prediction_points: riskcloud.gold.prediction_points
+
+features_list:
+  # Application features
+  - feature_id: app.credit_income_ratio
+    lineage: "CAST(AMT_CREDIT AS DOUBLE) / NULLIF(CAST(AMT_INCOME_TOTAL AS DOUBLE), 0)"
+    source: application_train
+  - feature_id: app.annuity_income_ratio
+    lineage: "CAST(AMT_ANNUITY AS DOUBLE) / NULLIF(CAST(AMT_INCOME_TOTAL AS DOUBLE), 0)"
+    source: application_train
+  - feature_id: app.age_years
+    lineage: "CAST(DAYS_BIRTH AS DOUBLE) / -365.25"
+    source: application_train
+  - feature_id: app.ext_source_mean
+    lineage: "(COALESCE(EXT_SOURCE_1,0)+COALESCE(EXT_SOURCE_2,0)+COALESCE(EXT_SOURCE_3,0))/NULLIF((CASE WHEN EXT_SOURCE_1 IS NOT NULL THEN 1 ELSE 0 END+CASE WHEN EXT_SOURCE_2 IS NOT NULL THEN 1 ELSE 0 END+CASE WHEN EXT_SOURCE_3 IS NOT NULL THEN 1 ELSE 0 END),0)"
+    source: application_train
+
+  # Bureau features
+  - feature_id: bureau.record_count
+    lineage: "COUNT(*)"
+    source: bureau
+  - feature_id: bureau.days_credit_mean
+    lineage: "AVG(DAYS_CREDIT)"
+    source: bureau
+  - feature_id: bureau.recent_12m_count
+    lineage: "COUNT(CASE WHEN DAYS_CREDIT BETWEEN -365 AND 0 THEN 1 END)"
+    source: bureau
+
+  # Bureau balance features
+  - feature_id: bureau_balance.month_count
+    lineage: "COUNT(*)"
+    source: bureau_balance
