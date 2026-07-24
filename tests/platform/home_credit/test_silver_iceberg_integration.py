@@ -102,5 +102,8 @@ class TestSilverIngestion:
         )
         tbl = receipt["tables"]["application_train"]["table_name"]
         schema = module_setup["spark"].table(tbl).schema
-        types = {f.name: str(f.dataType) for f in schema.fields if f.name in ("SK_ID_CURR", "TARGET")}
-        assert types.get("SK_ID_CURR") == "IntegerType", f"expected INT, got {types}"
+        from pyspark.sql.types import IntegerType
+
+        fields = {f.name: f for f in schema.fields}
+        assert isinstance(fields["SK_ID_CURR"].dataType, IntegerType)
+        assert isinstance(fields["TARGET"].dataType, IntegerType)

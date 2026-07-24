@@ -153,16 +153,17 @@ def _ingest(spark, config, tbl_key, tbl_def, bronze_table, manifest_sha):
         enr_df = spark.table(enr_src).filter(f"_source_manifest_sha256 = '{manifest_sha}'")
         jk = enrichment["join_key"]
         adds = enrichment["add_columns"]
-        # Cast enrichment columns to match Silver type mapping
-        enr_cols = [col(jk)]
-        for ac in adds:
-            tt = type_map.get(ac, "STRING")
+        # Cast enrichment columns (including join key) to match Silver type mapping
+        enr_cols = []
+        all_enr_cols = [jk] + adds
+        for ec in all_enr_cols:
+            tt = type_map.get(ec, "STRING")
             if tt == "INT":
-                enr_cols.append(col(ac).cast("int"))
+                enr_cols.append(col(ec).cast("int"))
             elif tt == "DOUBLE":
-                enr_cols.append(col(ac).cast("double"))
+                enr_cols.append(col(ec).cast("double"))
             else:
-                enr_cols.append(col(ac))
+                enr_cols.append(col(ec))
         enr_sel = enr_df.select(*enr_cols).distinct()
         dupes = enr_sel.groupBy(jk).count().filter("count > 1").count()
         if dupes > 0:

@@ -160,7 +160,8 @@ def publish(receipt_dir: Path, stage: str, snapshot_manifest: dict, receipt: dic
     try:
         stage_dir.mkdir(parents=True)
         sm_sha = atomic_write_yaml(stage_dir / "snapshot_manifest.yaml", snapshot_manifest)
-        receipt["quality"]["snapshot_manifest_sha256"] = sm_sha
+        quality = receipt.setdefault("quality", {})
+        quality["snapshot_manifest_sha256"] = sm_sha
         r_sha = atomic_write_yaml(stage_dir / f"{stage}_receipt.yaml", receipt)
         fsync_dir(stage_dir)
         os.replace(stage_dir, receipt_dir)
