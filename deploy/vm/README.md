@@ -9,16 +9,31 @@
 ## Deployment Steps
 
 ```bash
-# 1. Bootstrap the VM
+# 1. Install Git and clone
+sudo apt-get update
+sudo apt-get install -y git
+git clone https://github.com/lzzzhh/LeakBench-RiskCloud.git "${HOME}/LeakBench-RiskCloud"
+cd "${HOME}/LeakBench-RiskCloud"
+
+# 2. Bootstrap Docker
 bash deploy/vm/bootstrap.sh
 
-# 2. Deploy (clone + build)
+# IMPORTANT: Exit SSH and reconnect for Docker group to take effect
+exit
+```
+
+After reconnecting:
+
+```bash
+cd "${HOME}/LeakBench-RiskCloud"
+
+# 3. Deploy (checkout + build)
 bash deploy/vm/deploy.sh
 
-# 3. Run the demo
+# 4. Run the demo
 bash deploy/vm/run_demo.sh
 
-# 4. Verify results
+# 5. Verify results
 bash deploy/vm/verify.sh
 ```
 
@@ -34,17 +49,18 @@ WOE Rules: > 0
 ## Cleanup
 
 ```bash
-# Stop Docker containers
 docker compose down
-
-# Remove persisted data (optional)
 rm -rf data/warehouse data/artifacts
 ```
 
 ## Estimated Costs
 
-- VM: ~$0.25-0.50/hour (4 vCPU, 16 GB)
-- Storage: ~$5-10/month (50 GB)
-- Total for 2-hour demo: ~$1-2 USD
+Costs depend on cloud provider, region, instance type, and disk type.
+Example budget for demonstration purposes — check your platform's real-time
+pricing before creating resources:
 
-Remember to stop or delete the VM after testing to avoid ongoing charges.
+- VM (4 vCPU, 16 GB): ~$0.25-0.50/hour
+- Disk (50 GB): ~$5-10/month
+- 2-hour demo: ~$1-2 USD
+
+**Stop or delete the VM after testing to avoid ongoing charges.**

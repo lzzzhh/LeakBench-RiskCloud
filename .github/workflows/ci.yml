@@ -175,3 +175,22 @@ jobs:
           path: |
             packaging-build.log
             packaging-demo.log
+
+  cloud-script-smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install ShellCheck
+        run: sudo apt-get update && sudo apt-get install -y shellcheck
+      - name: Check Bash syntax
+        run: bash -n deploy/vm/*.sh
+      - name: Run ShellCheck
+        run: shellcheck deploy/vm/*.sh
+      - name: Verify deployment files
+        run: |
+          test -f deploy/vm/.env.example
+          test -f deploy/vm/README.md
+          test -x deploy/vm/bootstrap.sh
+          test -x deploy/vm/deploy.sh
+          test -x deploy/vm/run_demo.sh
+          test -x deploy/vm/verify.sh
