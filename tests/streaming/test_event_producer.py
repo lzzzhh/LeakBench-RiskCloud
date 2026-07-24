@@ -7,13 +7,13 @@ from case_studies.home_credit.streaming.producer.replay import read_csv_events
 
 class TestEventProducer:
     def test_dry_run_produces_events(self):
-        fixtures = Path(__file__).resolve().parents[3] / "tests" / "fixtures" / "home_credit_phase1"
+        fixtures = Path(__file__).resolve().parents[2] / "tests" / "fixtures" / "home_credit_phase1"
         events = read_csv_events(fixtures, seed=20260724, speed=1.0)
         assert len(events) > 0, "No events produced"
         assert len(events) >= 300, f"Expected >=300 events, got {len(events)}"
 
     def test_events_have_required_fields(self):
-        fixtures = Path(__file__).resolve().parents[3] / "tests" / "fixtures" / "home_credit_phase1"
+        fixtures = Path(__file__).resolve().parents[2] / "tests" / "fixtures" / "home_credit_phase1"
         events = read_csv_events(fixtures, seed=20260724, speed=1.0)
         for e in events:
             assert "event_id" in e
@@ -25,7 +25,7 @@ class TestEventProducer:
             assert "event_time" in e
 
     def test_deterministic(self):
-        fixtures = Path(__file__).resolve().parents[3] / "tests" / "fixtures" / "home_credit_phase1"
+        fixtures = Path(__file__).resolve().parents[2] / "tests" / "fixtures" / "home_credit_phase1"
         e1 = read_csv_events(fixtures, seed=42, speed=1.0)
         e2 = read_csv_events(fixtures, seed=42, speed=1.0)
         assert len(e1) == len(e2)
@@ -33,7 +33,7 @@ class TestEventProducer:
             assert e1[i]["event_id"] == e2[i]["event_id"]
 
     def test_different_seed_different_order(self):
-        fixtures = Path(__file__).resolve().parents[3] / "tests" / "fixtures" / "home_credit_phase1"
+        fixtures = Path(__file__).resolve().parents[2] / "tests" / "fixtures" / "home_credit_phase1"
         e1 = read_csv_events(fixtures, seed=42, speed=1.0)
         e2 = read_csv_events(fixtures, seed=99, speed=1.0)
         ids1 = [e["event_id"] for e in e1]
