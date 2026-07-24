@@ -39,6 +39,9 @@ def compute_features(
         struct,
         when,
     )
+    from pyspark.sql.functions import (
+        max as spark_max,
+    )
     from pyspark.sql.functions import sum as spark_sum
     from pyspark.sql.window import Window
 
@@ -55,7 +58,9 @@ def compute_features(
     sess = get_spark(app_name=f"riskcloud-feat-{run_id}", warehouse=warehouse) if own_spark else spark
     try:
         setup_namespaces(sess)
-        pp_df = sess.table(inp["prediction_points"]).select("prediction_id", "entity_id", "prediction_time")
+        pp_df = sess.table(inp["prediction_points"]).select(
+            "prediction_id", "entity_id", "prediction_time", "_source_manifest_sha256"
+        )
         app = sess.table(inp["silver_application"])
         bur = sess.table(inp["silver_bureau"]).filter(col("DAYS_CREDIT") <= 0)
         bub = sess.table(inp["silver_bureau_balance"]).filter(col("MONTHS_BALANCE") <= 0)
@@ -105,7 +110,7 @@ def compute_features(
             spark_sum(when(col("STATUS").isin("1", "2", "3", "4", "5"), 1).otherwise(0))
             .cast("double")
             .alias("bureau_balance.delinquent_month_count"),
-            spark_sum(delinq_level).alias("bureau_balance.max_delinquency_level"),
+            spark_max(delinq_level).cast("double").alias("bureau_balance.max_delinquency_level"),
         )
         # Latest status
         w = Window.partitionBy("SK_ID_CURR").orderBy(desc("MONTHS_BALANCE"), asc("SK_ID_BUREAU"))
@@ -133,7 +138,7 @@ def compute_features(
         structs = [
             struct(
                 lit(fid).alias("feature_id"),
-                col(fid).cast("double").alias("feature_value"),
+                col(f"`{fid}`").cast("double").alias("feature_value"),
             )
             for fid in fid_list
         ]
@@ -162,7 +167,7 @@ def compute_features(
         ]
         if not table_exists(sess, target):
             create_table(sess, target, cols, "_source_manifest_sha256", props)
-        flat.withColumn("_source_manifest_sha256", lit("")).writeTo(target).overwritePartitions()
+        flat.writeTo(target).overwritePartitions()
 
         meta = get_snapshot_meta(sess, target)
         receipt = {
