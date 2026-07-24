@@ -133,3 +133,17 @@ class TestE2E:
             assert r.entity_id.startswith("SK_ID_CURR:"), f"Bad entity_id: {r.entity_id}"
             suffix = r.entity_id.split(":", 1)[1]
             assert suffix.isdigit(), f"Non-numeric suffix: {suffix}"
+
+    def test_bureau_features_computed(self, e2e):
+        """Bureau features must be computed via explicit aggregation."""
+        spark = e2e["spark"]
+        expected = {
+            "bureau.record_count", "bureau.active_count", "bureau.closed_count",
+            "bureau.credit_sum_total", "bureau.debt_sum_total", "bureau.overdue_sum_total",
+            "bureau.days_credit_mean", "bureau.recent_12m_count",
+        }
+        for fid in expected:
+            count = spark.sql(
+                f"SELECT COUNT(*) FROM riskcloud.gold.feature_values WHERE feature_id = '{fid}'"
+            ).collect()[0][0]
+            assert count > 0, f"{fid}: not found in feature_values"
