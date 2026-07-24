@@ -148,6 +148,7 @@ def compute_features(
             "prediction_time",
             col("_feat.feature_id"),
             col("_feat.feature_value"),
+            "_source_manifest_sha256",
         )
 
         # Create or write table
@@ -218,16 +219,44 @@ def compute_woe_rules(
             if len(vals) < 8:
                 continue
             vals.sort(key=lambda x: x[0])
-            q = max(len(vals) // 4, 1)
+            # Separate missing values
+            all_rows = vals + [(None, float(r.label)) for r in rows if r.feature_value is None]
+            missing_vals = [(None, float(r.label)) for r in rows if r.feature_value is None]
             bins = []
-            total_good = sum(1 for _, lbl in vals if lbl == 0)
-            total_bad = sum(1 for _, lbl in vals if lbl == 1)
+            total_good = sum(1 for v, lbl in all_rows if lbl == 0)
+            total_bad = sum(1 for v, lbl in all_rows if lbl == 1)
             if total_good == 0 or total_bad == 0:
                 continue
-            for i in range(4):
-                lo = vals[i * q][0]
-                hi = vals[min((i + 1) * q, len(vals)) - 1][0]
-                bin_vals = vals[i * q : min((i + 1) * q, len(vals))]
+            # Missing bin
+            if missing_vals:
+                mg = sum(1 for v, lbl in missing_vals if lbl == 0) + 0.5
+                mb = sum(1 for v, lbl in missing_vals if lbl == 1) + 0.5
+                bins.append(
+                    {
+                        "lower": None,
+                        "upper": None,
+                        "is_missing": True,
+                        "raw_good_count": sum(1 for v, lbl in missing_vals if lbl == 0),
+                        "raw_bad_count": sum(1 for v, lbl in missing_vals if lbl == 1),
+                        "smoothed_good_count": mg,
+                        "smoothed_bad_count": mb,
+                        "good_distribution": mg / (total_good + 2.0),
+                        "bad_distribution": mb / (total_bad + 2.0),
+                        "woe": math.log(mg / mb) if mg > 0 and mb > 0 else 0.0,
+                        "iv_component": (mg / (total_good + 2.0) - mb / (total_bad + 2.0))
+                        * (math.log(mg / mb) if mg > 0 and mb > 0 else 0.0),
+                    }
+                )
+            bin_count = 4
+            bin_size = max(len(vals) // bin_count, 1)
+            for i in range(bin_count):
+                start = i * bin_size
+                end = len(vals) if i == bin_count - 1 else min((i + 1) * bin_size, len(vals))
+                bin_vals = vals[start:end]
+                if not bin_vals:
+                    continue
+                lo = bin_vals[0][0]
+                hi = bin_vals[-1][0]
                 g = sum(1 for _, lbl in bin_vals if lbl == 0) + 0.5
                 b = sum(1 for _, lbl in bin_vals if lbl == 1) + 0.5
                 gd = g / (total_good + 2.0)
