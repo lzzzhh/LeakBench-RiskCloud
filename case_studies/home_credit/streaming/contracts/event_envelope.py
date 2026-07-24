@@ -1,4 +1,4 @@
-"""Realtime event contracts — EventEnvelope, FeatureUpdate, Kafka topics, source payloads."""
+"""Realtime event contracts — EventEnvelope, FeatureUpdate, Kafka topics, typed source payloads."""
 
 from __future__ import annotations
 
@@ -11,9 +11,11 @@ from datetime import datetime
 from enum import Enum
 from typing import Any
 
-# -----------------------------------------------------------------
+from riskcloud.adapters.home_credit.feature_catalog import get_features
+
+# =================================================================
 # Kafka topics
-# -----------------------------------------------------------------
+# =================================================================
 
 @dataclass(frozen=True)
 class KafkaTopicSpec:
@@ -43,11 +45,73 @@ SOURCE_TABLES = {"application_train", "bureau", "bureau_balance"}
 SCHEMA_VERSION = 1
 _ENTITY_ID_RE = re.compile(r"^SK_ID_CURR:[0-9]+$")
 _EVENT_ID_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
+_UPDATE_ID_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
 
 
-# -----------------------------------------------------------------
-# Source payload types
-# -----------------------------------------------------------------
+def _canonical_json(obj: Any) -> str:
+    return json.dumps(obj, sort_keys=True, separators=(",", ":"), allow_nan=False)
+
+
+def _canonical_feature_value(value: float | None) -> str:
+    if value is None:
+        return "null"
+    if not math.isfinite(value):
+        raise ValueError(f"non-finite feature value: {value}")
+    if value == 0:
+        return "0"
+    return format(value, ".17g")
+
+
+# =================================================================
+# Typed source payloads
+# =================================================================
+
+def _validate_required_int(d: dict, key: str, errors: list[str]) -> int | None:
+    v = d.get(key)
+    if v is None:
+        errors.append(f"{key} is required")
+        return None
+    if isinstance(v, bool) or not isinstance(v, int):
+        errors.append(f"{key} must be int, got {type(v).__name__}")
+        return None
+    return v
+
+
+def _validate_optional_float(d: dict, key: str, errors: list[str]) -> float | None:
+    v = d.get(key)
+    if v is None:
+        return None
+    if isinstance(v, bool):
+        errors.append(f"{key} must not be bool")
+        return None
+    if isinstance(v, (int, float)):
+        if not math.isfinite(float(v)):
+            errors.append(f"{key} must be finite")
+            return None
+        return float(v)
+    errors.append(f"{key} must be numeric, got {type(v).__name__}")
+    return None
+
+
+def _validate_optional_int(d: dict, key: str, errors: list[str]) -> int | None:
+    v = d.get(key)
+    if v is None:
+        return None
+    if isinstance(v, bool) or not isinstance(v, int):
+        errors.append(f"{key} must be int, got {type(v).__name__}")
+        return None
+    return v
+
+
+def _validate_optional_str(d: dict, key: str, errors: list[str]) -> str | None:
+    v = d.get(key)
+    if v is None:
+        return None
+    if not isinstance(v, str):
+        errors.append(f"{key} must be str, got {type(v).__name__}")
+        return None
+    return v
+
 
 @dataclass(frozen=True)
 class ApplicationEventPayload:
@@ -84,6 +148,37 @@ class ApplicationEventPayload:
     def to_dict(self) -> dict[str, Any]:
         return {k: v for k, v in self.__dict__.items() if v is not None}
 
+    @classmethod
+    def from_dict(cls, d: dict[str, Any]) -> ApplicationEventPayload:
+        errors: list[str] = []
+        sk = _validate_required_int(d, "SK_ID_CURR", errors)
+        if errors:
+            raise ValueError("; ".join(errors))
+        flag_keys = {f"FLAG_DOCUMENT_{i}" for i in range(2, 22)}
+        extra = set(d.keys()) - {"SK_ID_CURR", "AMT_INCOME_TOTAL", "AMT_CREDIT", "AMT_ANNUITY",
+                                 "AMT_GOODS_PRICE", "DAYS_BIRTH", "EXT_SOURCE_1", "EXT_SOURCE_2",
+                                 "EXT_SOURCE_3"} - flag_keys
+        if extra:
+            raise ValueError(f"unknown fields: {extra}")
+        flags = {}
+        for fk in flag_keys:
+            v = d.get(fk, 0)
+            if v not in (0, 1, None):
+                raise ValueError(f"{fk} must be 0 or 1, got {v}")
+            flags[fk] = v if v is not None else 0
+        return cls(
+            SK_ID_CURR=sk,  # type: ignore[arg-type]
+            AMT_INCOME_TOTAL=_validate_optional_float(d, "AMT_INCOME_TOTAL", errors),
+            AMT_CREDIT=_validate_optional_float(d, "AMT_CREDIT", errors),
+            AMT_ANNUITY=_validate_optional_float(d, "AMT_ANNUITY", errors),
+            AMT_GOODS_PRICE=_validate_optional_float(d, "AMT_GOODS_PRICE", errors),
+            DAYS_BIRTH=_validate_optional_int(d, "DAYS_BIRTH", errors),
+            EXT_SOURCE_1=_validate_optional_float(d, "EXT_SOURCE_1", errors),
+            EXT_SOURCE_2=_validate_optional_float(d, "EXT_SOURCE_2", errors),
+            EXT_SOURCE_3=_validate_optional_float(d, "EXT_SOURCE_3", errors),
+            **{k.replace("FLAG_DOCUMENT_", "FLAG_DOCUMENT_"): v for k, v in flags.items()},  # type: ignore[arg-type]
+        )
+
 
 @dataclass(frozen=True)
 class BureauEventPayload:
@@ -98,6 +193,31 @@ class BureauEventPayload:
     def to_dict(self) -> dict[str, Any]:
         return {k: v for k, v in self.__dict__.items() if v is not None}
 
+    @classmethod
+    def from_dict(cls, d: dict[str, Any]) -> BureauEventPayload:
+        errors: list[str] = []
+        sk_curr = _validate_required_int(d, "SK_ID_CURR", errors)
+        sk_bur = _validate_required_int(d, "SK_ID_BUREAU", errors)
+        if errors:
+            raise ValueError("; ".join(errors))
+        ca = d.get("CREDIT_ACTIVE")
+        if ca is not None and ca not in ("Active", "Closed"):
+            errors.append(f"CREDIT_ACTIVE must be Active/Closed, got {ca}")
+        extra = set(d.keys()) - {"SK_ID_CURR", "SK_ID_BUREAU", "DAYS_CREDIT", "CREDIT_ACTIVE",
+                                 "AMT_CREDIT_SUM", "AMT_CREDIT_SUM_DEBT", "AMT_CREDIT_SUM_OVERDUE"}
+        if extra:
+            errors.append(f"unknown fields: {extra}")
+        if errors:
+            raise ValueError("; ".join(errors))
+        return cls(
+            SK_ID_CURR=sk_curr, SK_ID_BUREAU=sk_bur,  # type: ignore[arg-type]
+            DAYS_CREDIT=_validate_optional_int(d, "DAYS_CREDIT", errors),
+            CREDIT_ACTIVE=ca,
+            AMT_CREDIT_SUM=_validate_optional_float(d, "AMT_CREDIT_SUM", errors),
+            AMT_CREDIT_SUM_DEBT=_validate_optional_float(d, "AMT_CREDIT_SUM_DEBT", errors),
+            AMT_CREDIT_SUM_OVERDUE=_validate_optional_float(d, "AMT_CREDIT_SUM_OVERDUE", errors),
+        )
+
 
 @dataclass(frozen=True)
 class BureauBalanceEventPayload:
@@ -109,10 +229,34 @@ class BureauBalanceEventPayload:
     def to_dict(self) -> dict[str, Any]:
         return {k: v for k, v in self.__dict__.items() if v is not None}
 
+    @classmethod
+    def from_dict(cls, d: dict[str, Any]) -> BureauBalanceEventPayload:
+        errors: list[str] = []
+        sk_curr = _validate_required_int(d, "SK_ID_CURR", errors)
+        sk_bur = _validate_required_int(d, "SK_ID_BUREAU", errors)
+        if errors:
+            raise ValueError("; ".join(errors))
+        st = d.get("STATUS")
+        if st is not None and st not in ("0", "1", "2", "3", "4", "5", "C", "X"):
+            errors.append(f"STATUS must be 0-5/C/X, got {st}")
+        extra = set(d.keys()) - {"SK_ID_CURR", "SK_ID_BUREAU", "MONTHS_BALANCE", "STATUS"}
+        if extra:
+            raise ValueError(f"unknown fields: {extra}")
+        if errors:
+            raise ValueError("; ".join(errors))
+        return cls(
+            SK_ID_CURR=sk_curr, SK_ID_BUREAU=sk_bur,  # type: ignore[arg-type]
+            MONTHS_BALANCE=_validate_optional_int(d, "MONTHS_BALANCE", errors),
+            STATUS=st,
+        )
 
-# -----------------------------------------------------------------
+
+SourcePayload = ApplicationEventPayload | BureauEventPayload | BureauBalanceEventPayload
+
+
+# =================================================================
 # Enums
-# -----------------------------------------------------------------
+# =================================================================
 
 class Operation(str, Enum):
     UPSERT = "UPSERT"
@@ -139,16 +283,19 @@ _EVENT_TYPE_TO_SOURCE: dict[EventType, str] = {
     EventType.BUREAU_BALANCE_UPSERT: "bureau_balance",
 }
 
-_SOURCE_TO_PAYLOAD: dict[str, type] = {
-    "application_train": ApplicationEventPayload,
-    "bureau": BureauEventPayload,
-    "bureau_balance": BureauBalanceEventPayload,
+_EVENT_TYPE_TO_PAYLOAD: dict[EventType, type] = {
+    EventType.APPLICATION_UPSERT: ApplicationEventPayload,
+    EventType.BUREAU_UPSERT: BureauEventPayload,
+    EventType.BUREAU_BALANCE_UPSERT: BureauBalanceEventPayload,
 }
 
 
-# -----------------------------------------------------------------
+CATALOG_FEATURE_IDS = frozenset(f.feature_id for f in get_features())
+
+
+# =================================================================
 # EventEnvelope
-# -----------------------------------------------------------------
+# =================================================================
 
 @dataclass(frozen=True)
 class EventEnvelope:
@@ -161,29 +308,31 @@ class EventEnvelope:
     op: Operation
     event_time: datetime
     produced_at: datetime
-    payload: dict[str, Any] = field(default_factory=dict)
-
-    @staticmethod
-    def _canonical_json(obj: Any) -> bytes:
-        return json.dumps(obj, sort_keys=True, separators=(",", ":"), allow_nan=False).encode()
+    payload: SourcePayload = field(default_factory=dict)
 
     @staticmethod
     def compute_event_id(
-        source_table: str, source_pk: str, payload: dict[str, Any],
+        source_table: str, source_pk: str, payload_dict: dict[str, Any],
         event_time: datetime, op: Operation,
     ) -> str:
         parts = [source_table, source_pk, event_time.isoformat(), op.value,
-                 json.dumps(payload, sort_keys=True, separators=(",", ":"), allow_nan=False)]
+                 json.dumps(payload_dict, sort_keys=True, separators=(",", ":"), allow_nan=False)]
         return "sha256:" + hashlib.sha256(json.dumps(parts, separators=(",", ":")).encode()).hexdigest()
 
+    def expected_event_id(self) -> str:
+        return self.compute_event_id(
+            self.source_table, self.source_pk, self.payload.to_dict(),
+            self.event_time, self.op,
+        )
+
     def validate(self) -> list[str]:
-        errors = []
+        errors: list[str] = []
         if not _EVENT_ID_RE.match(self.event_id):
-            errors.append(f"event_id must match sha256:<64 hex>, got {self.event_id}")
+            errors.append("event_id must match sha256:<64 hex>")
         if self.schema_version != SCHEMA_VERSION:
             errors.append(f"schema_version must be {SCHEMA_VERSION}")
         if not _ENTITY_ID_RE.match(self.entity_id):
-            errors.append(f"entity_id must match SK_ID_CURR:<digits>, got {self.entity_id}")
+            errors.append("entity_id must match SK_ID_CURR:<digits>")
         if self.event_time.tzinfo is None:
             errors.append("event_time must be timezone-aware")
         if self.produced_at.tzinfo is None:
@@ -193,8 +342,13 @@ class EventEnvelope:
         expected_table = _EVENT_TYPE_TO_SOURCE.get(self.event_type)
         if expected_table is None:
             errors.append(f"unknown event_type: {self.event_type}")
-        elif expected_table not in self.source_table:
-            errors.append(f"event_type {self.event_type} does not match source_table {self.source_table}")
+        elif expected_table != self.source_table:
+            errors.append(f"event_type {self.event_type.value} != source_table {self.source_table}")
+        expected_payload_cls = _EVENT_TYPE_TO_PAYLOAD.get(self.event_type)
+        if expected_payload_cls and not isinstance(self.payload, expected_payload_cls):
+            errors.append(f"payload type mismatch for {self.event_type.value}")
+        if self.event_id != self.expected_event_id():
+            errors.append("event_id does not match event content")
         return errors
 
     def is_valid(self) -> bool:
@@ -206,7 +360,7 @@ class EventEnvelope:
             "event_type": self.event_type.value, "source_table": self.source_table,
             "source_pk": self.source_pk, "entity_id": self.entity_id,
             "op": self.op.value, "event_time": self.event_time.isoformat(),
-            "produced_at": self.produced_at.isoformat(), "payload": self.payload,
+            "produced_at": self.produced_at.isoformat(), "payload": self.payload.to_dict(),
         }
 
     def to_json(self) -> str:
@@ -214,12 +368,15 @@ class EventEnvelope:
 
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> EventEnvelope:
+        evt_type = EventType(d["event_type"])
+        payload_cls = _EVENT_TYPE_TO_PAYLOAD.get(evt_type)
+        payload = payload_cls.from_dict(d.get("payload", {})) if payload_cls else d.get("payload", {})
         return cls(
             event_id=d["event_id"], schema_version=d["schema_version"],
-            event_type=EventType(d["event_type"]), source_table=d["source_table"],
+            event_type=evt_type, source_table=d["source_table"],
             source_pk=d["source_pk"], entity_id=d["entity_id"],
             op=Operation(d["op"]), event_time=datetime.fromisoformat(d["event_time"]),
-            produced_at=datetime.fromisoformat(d["produced_at"]), payload=d.get("payload", {}),
+            produced_at=datetime.fromisoformat(d["produced_at"]), payload=payload,
         )
 
     @classmethod
@@ -227,9 +384,9 @@ class EventEnvelope:
         return cls.from_dict(json.loads(s))
 
 
-# -----------------------------------------------------------------
+# =================================================================
 # FeatureUpdate
-# -----------------------------------------------------------------
+# =================================================================
 
 @dataclass(frozen=True)
 class FeatureUpdate:
@@ -251,31 +408,38 @@ class FeatureUpdate:
         entity_id: str, feature_id: str, feature_version: int,
         event_time: datetime, feature_value: float | None,
     ) -> str:
-        val = "null" if feature_value is None else (
-            str(feature_value) if math.isfinite(feature_value) else
-            (_ for _ in ()).throw(ValueError(f"non-finite value: {feature_value}"))
-        )
-        parts = [entity_id, feature_id, str(feature_version), event_time.isoformat(), val]
+        parts = [entity_id, feature_id, str(feature_version), event_time.isoformat(),
+                 _canonical_feature_value(feature_value)]
         return "sha256:" + hashlib.sha256(json.dumps(parts, separators=(",", ":")).encode()).hexdigest()
 
+    def expected_update_id(self) -> str:
+        return self.compute_update_id(
+            self.entity_id, self.feature_id, self.feature_version,
+            self.event_time, self.feature_value,
+        )
+
     def validate(self) -> list[str]:
-        errors = []
+        errors: list[str] = []
         if not _ENTITY_ID_RE.match(self.entity_id):
-            errors.append(f"entity_id canonical: {self.entity_id}")
+            errors.append("entity_id canonical")
+        if self.feature_id not in CATALOG_FEATURE_IDS:
+            errors.append(f"feature_id not in catalog: {self.feature_id}")
         if self.feature_version <= 0:
-            errors.append("feature_version must be > 0")
+            errors.append("feature_version > 0")
         if self.event_time.tzinfo is None:
             errors.append("event_time timezone-aware")
         if self.computed_at.tzinfo is None:
             errors.append("computed_at timezone-aware")
-        if self.computed_at < self.event_time:
-            errors.append("computed_at < event_time")
         if not _EVENT_ID_RE.match(self.source_event_id):
             errors.append("source_event_id format")
         if self.source_topic not in ALL_SOURCE_TOPICS:
             errors.append(f"unknown source_topic: {self.source_topic}")
         if self.feature_value is not None and not math.isfinite(self.feature_value):
-            errors.append("feature_value must be finite or None")
+            errors.append("feature_value finite or None")
+        if not _UPDATE_ID_RE.match(self.feature_update_id):
+            errors.append("feature_update_id format")
+        if self.feature_update_id != self.expected_update_id():
+            errors.append("feature_update_id mismatch")
         return errors
 
     def is_valid(self) -> bool:

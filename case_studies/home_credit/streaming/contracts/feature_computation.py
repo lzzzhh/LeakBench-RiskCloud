@@ -54,7 +54,7 @@ def _build_app_specs(features) -> list[FeatureComputationSpec]:
             source_table="application_train",
             computation_kind=ComputationKind.ROW,
             group_key=None,
-            batch_implementation_ref="features.py:build_application_features",
+            batch_implementation_ref="case_studies.home_credit.pipelines.features:compute_features",
             stream_expression_sql=sql_map[f.feature_id],
         )
         for f in features
@@ -69,7 +69,7 @@ def _build_bureau_specs(features) -> list[FeatureComputationSpec]:
             source_table="bureau",
             computation_kind=ComputationKind.AGGREGATE,
             group_key="SK_ID_CURR",
-            batch_implementation_ref="features.py:build_bureau_features",
+            batch_implementation_ref="case_studies.home_credit.pipelines.features:compute_features",
             stream_expression_sql=sql_map[f.feature_id],
             input_filter_sql="DAYS_CREDIT <= 0",
         )
@@ -91,7 +91,7 @@ def _build_bub_specs(features) -> list[FeatureComputationSpec]:
             source_table="bureau_balance",
             computation_kind=kinds.get(f.feature_id, ComputationKind.AGGREGATE),
             group_key="SK_ID_CURR",
-            batch_implementation_ref="features.py:build_bureau_balance_features",
+            batch_implementation_ref="case_studies.home_credit.pipelines.features:compute_features",
             stream_expression_sql=sql_map[f.feature_id],
             input_filter_sql="MONTHS_BALANCE <= 0",
         )
