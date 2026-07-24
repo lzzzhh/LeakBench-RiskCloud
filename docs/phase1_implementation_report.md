@@ -1,59 +1,47 @@
-# Phase 1 Implementation Report
+# Resume MVP Implementation Report
 
-## Scope
+## Status
 
-| Sub-phase | Status | Description |
-|---|---|---|
-| P1.0 | AUDIT_CLOSED | Data manifest, Spark/Iceberg skeleton |
-| P1.1 | AUDIT_CLOSED | Home Credit Adapter, Prediction Boundary |
-| P1.2 | AUDIT_CLOSED | Bronze Iceberg Ingestion |
-| P1.3 | IMPLEMENTED | Silver Standardization |
-| P1.4 | IMPLEMENTED | Prediction Points |
-| P1.5 | IMPLEMENTED | As-of Features |
-| P1.6 | IMPLEMENTED | WOE/IV Rules |
-| P1.7 | IMPLEMENTED | Snapshot & Rerun Verification |
-
-## Deliverables
-
-### P1.3 Silver
-- `silver_ingestion.py`: reads Bronze, casts types, enriches bureau_balance
-- `silver_v1.yaml`: type mapping, enrichment config
-- `ADR-0004`: standardization rationale
-- Integration test: bureau_balance enrichment, type casting
-
-### P1.4 Prediction Points
-- `prediction_points.py`: generates from silver + adapter/boundary
-- `prediction_points_v1.yaml`: config
-- Uses Phase 1 Adapter/Boundary
-
-### P1.5 As-of Features
-- `features.py`: application features from silver
-- `features_v1.yaml`: feature definitions
-- Long-format feature value table
-
-### P1.6 WOE/IV
-- `woe_rules.py`: train-only bin fitting
-- Simple binary binning per feature
-
-### P1.7 Rerun
-- E2E test verifies idempotency
-- Bronze/Silver/PP/Features chain
-
-## Test Evidence
-
-| Layer | Unit | Integration |
-|---|---|---|
-| P0-P1.1 | 247 | - |
-| P1.2 Bronze | 247 | 12 |
-| P1.3 Silver | 247 | 3 |
-| P1.4-P1.7 E2E | 247 | 4 |
-
-## Frozen Files
-
-```text
-Phase 0–P1.2 frozen contracts modified: 0
+```yaml
+phase: Resume MVP
+implementation_status: IMPLEMENTED
+audit_status: READY_FOR_RESUME_MVP_AUDIT
+blocking_findings_claimed: 0
+merge_requested: false
 ```
 
-## CI
+## Pipeline
 
-All jobs green including bronze, silver, and phase1-e2e integration.
+| Layer | Status | Table Count |
+|---|---|---|
+| Bronze | COMPLETE | 3 |
+| Silver | COMPLETE | 3 |
+| Prediction Points | COMPLETE | 1 |
+| Feature Values | COMPLETE | 1 (20 features) |
+| WOE/IV Rules | COMPLETE | Per-feature rules |
+
+## Key Metrics
+
+- Bronze tables: 3 (application_train, bureau, bureau_balance)
+- Silver tables: 3 (with type casting + bureau_balance enrichment)
+- Prediction Points: 1 per application
+- Feature Catalog closure: 20/20 (8 app + 8 bureau + 4 bureau_balance)
+- Feature Values: prediction_point_count × 20
+- WOE/IV: train-only quartile binning with 0.5 additive smoothing
+- CI: unit matrix (3.10-3.13) + Freeze + Ruff + Spark smoke + Bronze + Silver + E2E
+
+## Known Limitations
+
+- Local Spark single-node mode
+- Feature long-format conversion uses fixture-scale Driver materialization (marked P2 TODO)
+- WOE/IV computed on Driver for small demo dataset
+- No production scheduling, monitoring, or cloud deployment
+- Strict/Full Views, Rule Application deferred to backlog
+- No cross-layer Manifest A/B coexistence tests
+- No full failure injection matrix
+
+## Next Steps
+
+PR #5: README, Docker, local demo packaging
+PR #6: Minimal cloud deployment
+Backlog: distributed rewrite, governance hardening, modeling output
