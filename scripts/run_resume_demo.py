@@ -8,6 +8,10 @@ import tempfile
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[1]
+
+repo_path = str(REPO)
+if repo_path not in sys.path:
+    sys.path.insert(0, repo_path)
 FIXTURES = REPO / "tests" / "fixtures" / "home_credit_phase1"
 REQUIRED_FILES = ["application_train.csv", "bureau.csv", "bureau_balance.csv"]
 

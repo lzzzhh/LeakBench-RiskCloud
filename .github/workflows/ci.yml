@@ -161,6 +161,8 @@ jobs:
           test -d data/warehouse
           test -f data/artifacts/demo/bronze/bronze_receipt.yaml
           test -f data/artifacts/demo/silver/silver_receipt.yaml
+          test -f data/artifacts/demo/prediction_points/prediction_points_receipt.yaml
+          test -f data/artifacts/demo/features/features_receipt.yaml
           test -f data/artifacts/demo/woe/woe_rules.yaml
           grep -q "Prediction Points: 30" packaging-demo.log
           grep -q "Feature Values: 600" packaging-demo.log
