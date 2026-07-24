@@ -204,9 +204,13 @@ class BureauEventPayload:
         sk_bur = _validate_required_int(d, "SK_ID_BUREAU", errors)
         if errors:
             raise ValueError("; ".join(errors))
+        days_credit = _validate_optional_int(d, "DAYS_CREDIT", errors)
         ca = d.get("CREDIT_ACTIVE")
         if ca is not None and ca not in ("Active", "Closed"):
             errors.append(f"CREDIT_ACTIVE must be Active/Closed, got {ca}")
+        amt_sum = _validate_optional_float(d, "AMT_CREDIT_SUM", errors)
+        amt_debt = _validate_optional_float(d, "AMT_CREDIT_SUM_DEBT", errors)
+        amt_overdue = _validate_optional_float(d, "AMT_CREDIT_SUM_OVERDUE", errors)
         extra = set(d.keys()) - {"SK_ID_CURR", "SK_ID_BUREAU", "DAYS_CREDIT", "CREDIT_ACTIVE",
                                  "AMT_CREDIT_SUM", "AMT_CREDIT_SUM_DEBT", "AMT_CREDIT_SUM_OVERDUE"}
         if extra:
@@ -214,12 +218,10 @@ class BureauEventPayload:
         if errors:
             raise ValueError("; ".join(errors))
         return cls(
-            SK_ID_CURR=sk_curr, SK_ID_BUREAU=sk_bur,  # type: ignore[arg-type]
-            DAYS_CREDIT=_validate_optional_int(d, "DAYS_CREDIT", errors),
-            CREDIT_ACTIVE=ca,
-            AMT_CREDIT_SUM=_validate_optional_float(d, "AMT_CREDIT_SUM", errors),
-            AMT_CREDIT_SUM_DEBT=_validate_optional_float(d, "AMT_CREDIT_SUM_DEBT", errors),
-            AMT_CREDIT_SUM_OVERDUE=_validate_optional_float(d, "AMT_CREDIT_SUM_OVERDUE", errors),
+            SK_ID_CURR=sk_curr, SK_ID_BUREAU=sk_bur,
+            DAYS_CREDIT=days_credit, CREDIT_ACTIVE=ca,
+            AMT_CREDIT_SUM=amt_sum, AMT_CREDIT_SUM_DEBT=amt_debt,
+            AMT_CREDIT_SUM_OVERDUE=amt_overdue,
         )
 
 
