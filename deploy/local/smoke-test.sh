@@ -30,10 +30,15 @@ for t in "${expected_topics[@]}"; do
         exit 1
     fi
     config_out=$("${COMPOSE[@]}" exec -T kafka /opt/kafka/bin/kafka-configs.sh --bootstrap-server localhost:29092 --describe --entity-type topics --entity-name "$t" 2>/dev/null)
-    policy=$(printf '%s\n' "$config_out" | sed -nE 's/.*cleanup\.policy=([^[:space:]]+).*/\1/p' | head -n 1)
+    policy=$(printf '%s\n' "$config_out" | grep -oE 'cleanup\.policy=(compact,delete|delete,compact|delete)' | head -n 1 | cut -d= -f2-)
+    if [[ -z "$policy" ]]; then
+        echo "FAIL: cleanup.policy not found for $t" >&2
+        echo "$config_out" >&2
+        exit 1
+    fi
     case "$t" in
-        *feature_updates*) normalized=",$policy,"; [[ "$normalized" == *",compact,"* && "$normalized" == *",delete,"* ]] || { echo "   FAIL: $t policy=$policy (expected compact,delete)" >&2; exit 1; } ;;
-        *) [[ "$policy" == "delete" ]] || { echo "   FAIL: $t policy=$policy (expected delete)" >&2; exit 1; } ;;
+        *feature_updates*) case "$policy" in compact,delete|delete,compact) ;; *) echo "   FAIL: $t policy=$policy (expected compact,delete)" >&2; exit 1 ;; esac ;;
+        *) [[ "$policy" != "delete" ]] && { echo "   FAIL: $t policy=$policy (expected delete)" >&2; exit 1; } || true ;;
     esac
     echo "   $t: partitions=$pc policy=$policy OK"
 done
