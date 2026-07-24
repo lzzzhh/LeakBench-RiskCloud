@@ -1,5 +1,5 @@
 .PHONY: test-mvp demo docker-build docker-demo clean-demo
-.PHONY: realtime-up realtime-down realtime-test realtime-clean
+.PHONY: realtime-up realtime-down realtime-test realtime-smoke realtime-clean
 
 test-mvp:
 	python -m pytest tests/ -v -m "not bronze_integration and not silver_integration and not e2e"
@@ -19,16 +19,27 @@ clean-demo:
 	rm -rf data/warehouse data/artifacts
 
 # -- Realtime infrastructure --
+REALTIME_COMPOSE := docker compose \
+	--project-directory $(CURDIR) \
+	-f $(CURDIR)/deploy/local/docker-compose.realtime.yml
 
 realtime-up:
-	docker compose -f deploy/local/docker-compose.realtime.yml up -d --wait
+	$(REALTIME_COMPOSE) up -d --wait kafka flink-jobmanager flink-taskmanager
+	$(REALTIME_COMPOSE) run --rm kafka-init
 
 realtime-down:
-	docker compose -f deploy/local/docker-compose.realtime.yml down
+	$(REALTIME_COMPOSE) down
 
-realtime-test:
+realtime-contract-test:
 	python -m pytest tests/streaming/ -v
 
+realtime-smoke:
+	bash deploy/local/smoke-test.sh
+
+realtime-test:
+	$(MAKE) realtime-contract-test
+	$(MAKE) realtime-smoke
+
 realtime-clean:
-	docker compose -f deploy/local/docker-compose.realtime.yml down -v
+	$(REALTIME_COMPOSE) down -v
 	rm -rf data/kafka data/flink/checkpoints data/flink/savepoints

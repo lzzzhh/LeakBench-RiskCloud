@@ -2,17 +2,24 @@
 # Initialize Kafka topics for RiskCloud realtime pipeline
 set -euo pipefail
 
-BROKER="kafka:9092"
+BROKER="${KAFKA_BOOTSTRAP_SERVERS:-kafka:29092}"
 RETRIES=30
 
 echo "Waiting for Kafka broker at $BROKER..."
-for i in $(seq 1 $RETRIES); do
-    if /opt/kafka/bin/kafka-broker-api-versions.sh --bootstrap-server "$BROKER" &>/dev/null; then
-        echo "Kafka is ready."
+ready=false
+for _ in $(seq 1 "$RETRIES"); do
+    if /opt/kafka/bin/kafka-broker-api-versions.sh --bootstrap-server "$BROKER" >/dev/null 2>&1; then
+        ready=true
         break
     fi
     sleep 2
 done
+
+if [[ "$ready" != "true" ]]; then
+    echo "Kafka broker unavailable: $BROKER" >&2
+    exit 1
+fi
+echo "Kafka is ready."
 
 declare -A TOPICS=(
     ["riskcloud.home_credit.application.v1"]="delete"
@@ -33,5 +40,11 @@ for topic in "${!TOPICS[@]}"; do
         --config "cleanup.policy=$policy"
 done
 
-echo "Topics created:"
-/opt/kafka/bin/kafka-topics.sh --bootstrap-server "$BROKER" --list
+echo ""
+echo "=== Topic details ==="
+for topic in "${!TOPICS[@]}"; do
+    /opt/kafka/bin/kafka-topics.sh --bootstrap-server "$BROKER" --describe --topic "$topic"
+done
+
+echo ""
+echo "All topics initialized."
