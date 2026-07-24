@@ -1,0 +1,9 @@
+services:
+  riskcloud-demo:
+    build: .
+    volumes:
+      - ./data/warehouse:/data/warehouse
+      - ./data/artifacts:/data/artifacts
+    environment:
+      RISKCLOUD_ICEBERG_WAREHOUSE: /data/warehouse
+      RISKCLOUD_ARTIFACTS_DIR: /data/artifacts

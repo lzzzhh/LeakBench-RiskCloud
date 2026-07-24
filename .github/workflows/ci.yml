@@ -143,3 +143,35 @@ jobs:
         with:
           name: phase1-e2e-log
           path: phase1-e2e.log
+
+  packaging-smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build Docker image
+        run: |
+          set -o pipefail
+          docker compose build 2>&1 | tee packaging-build.log
+      - name: Run Docker demo
+        run: |
+          set -o pipefail
+          docker compose run --rm riskcloud-demo 2>&1 | tee packaging-demo.log
+      - name: Verify persisted artifacts
+        run: |
+          test -d data/warehouse
+          test -f data/artifacts/demo/bronze/bronze_receipt.yaml
+          test -f data/artifacts/demo/silver/silver_receipt.yaml
+          test -f data/artifacts/demo/prediction_points/prediction_points_receipt.yaml
+          test -f data/artifacts/demo/features/features_receipt.yaml
+          test -f data/artifacts/demo/woe/woe_rules.yaml
+          grep -q "Prediction Points: 30" packaging-demo.log
+          grep -q "Feature Values: 600" packaging-demo.log
+          grep -q "Feature IDs: 20" packaging-demo.log
+          grep -Eq "WOE Rules: [1-9][0-9]*" packaging-demo.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: packaging-smoke-logs
+          path: |
+            packaging-build.log
+            packaging-demo.log
